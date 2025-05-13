@@ -1,681 +1,1359 @@
-local function safeGetRemote(path: string)
-	local node = game
-	for seg in string.gmatch(path, "[^%.]+") do
-		node = node:FindFirstChild(seg)
-		if not node then
-			return nil
-		end
-	end
-	return node:IsA("RemoteFunction") and node or nil
-end
-
-local function safeInvoke(remote, ...)
-	if not remote then
-		return nil
-	end
-	for _ = 1, 3 do 
-		local ok, res = pcall(remote.InvokeServer, remote, ...)
-		if ok and res then
-			return res
-		end
-		task.wait(0.25)
-	end
-	return nil
-end
-
-local DEFAULT_STATS = { ODM_Damage = 0, ODM_Speed = 0, Crit_Chance = 0 }
-
-local GET = safeGetRemote("ReplicatedStorage.Assets.Remotes.GET")
-local Data = safeInvoke(GET, "Data", "Stats") or {}
-
-for k, v in pairs(DEFAULT_STATS) do
-	if Data[k] == nil then
-		Data[k] = v
-	end
-end
-
-local function attr(obj, key, def)
-	local ok, val = pcall(obj.GetAttribute, obj, key)
-	return ok and val or def
-end
-
-pcall(function()
-	local cg = game:GetService("CoreGui"):FindFirstChild("StatsGUI")
-	if cg then
-		cg:Destroy()
-	end
-end)
-
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local UserInputService = game:GetService("UserInputService")
-
-local player = Players.LocalPlayer
-local Weapon = attr(player, "Weapon", "—")
-local Level = attr(player, "Level", 0)
-
-local statsGui = Instance.new("ScreenGui")
-statsGui.Name, statsGui.ResetOnSpawn, statsGui.Enabled = "StatsGUI", false, false
-statsGui.Parent = game:GetService("CoreGui")
-
-local COLORS = {
-	BACKGROUND = Color3.fromRGB(25, 25, 35),
-	HEADER = Color3.fromRGB(35, 30, 50),
-	TEXT = Color3.fromRGB(255, 255, 255),
-	ACCENT = Color3.fromRGB(130, 60, 250),
-	SECONDARY = Color3.fromRGB(45, 40, 70),
-	SUCCESS = Color3.fromRGB(110, 220, 160),
-	WARNING = Color3.fromRGB(250, 166, 26),
-	ERROR = Color3.fromRGB(240, 71, 71),
-	PURPLE_DARK = Color3.fromRGB(76, 40, 130),
-	PURPLE_LIGHT = Color3.fromRGB(150, 80, 255),
-}
-local TWEEN_INFO = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-local BASE_SIZE = {
-	WIDTH = 300,
-	HEIGHT = 300,
-	CORNER_RADIUS = 8,
-	HEADER_HEIGHT = 40,
-	TITLE_SIZE = 18,
-	STAT_HEIGHT = 30,
-	STAT_TEXT_SIZE = 14,
-	HEADER_TEXT_SIZE = 16,
-	STATUS_TEXT_SIZE = 14,
-	CLOSE_BUTTON_SIZE = 24,
-}
-local currentScale = 1
-local function setStroke(label, thickness)
-    local t = math.clamp(1 - (thickness * 0.25), 0, 1) 
-    label.TextStrokeTransparency = t
-end
-
-local function CreateRoundFrame(name, size, pos, parent, bg)
-	local f = Instance.new("Frame")
-	f.Name, f.Size, f.Position = name, size, pos
-	f.BackgroundColor3, f.BorderSizePixel = bg, 0
-	local c = Instance.new("UICorner", f)
-	c.CornerRadius = UDim.new(0, BASE_SIZE.CORNER_RADIUS * currentScale)
-	local sh = Instance.new("ImageLabel", f)
-	sh.Name, sh.AnchorPoint, sh.BackgroundTransparency = "Shadow", Vector2.new(0.5, 0.5), 1
-	sh.Position, sh.ZIndex = UDim2.new(0.5, 0, 0.5, 0), -1
-	sh.Size = UDim2.new(1, 24 * currentScale, 1, 24 * currentScale)
-	sh.Image, sh.ImageColor3, sh.ImageTransparency = "rbxassetid://6014261993", Color3.new(0, 0, 0), 0.5
-	sh.ScaleType, sh.SliceCenter = Enum.ScaleType.Slice, Rect.new(49, 49, 450, 450)
-	f.Parent = parent
-	return f
-end
-
-local function CreateTextLabel(name, text, size, pos, parent, clr, fsize, weight, align, glow)
-	local l = Instance.new("TextLabel")
-	l.Name, l.Size, l.Position, l.BackgroundTransparency = name, size, pos, 1
-	l.Text, l.TextColor3 = text, clr
-	l.Font = (weight == "Bold" and Enum.Font.GothamBold) or Enum.Font.GothamMedium
-	l.TextSize = (fsize or 14) * currentScale
-	l.TextXAlignment = align or Enum.TextXAlignment.Left
-	l.TextWrapped, l.TextStrokeTransparency = true, 1
-	l.TextStrokeColor3 = Color3.fromRGB(
-		math.min(clr.R * 1.5 * 255, 255) / 255,
-		math.min(clr.G * 1.5 * 255, 255) / 255,
-		math.min(clr.B * 1.5 * 255, 255) / 255
-	)
-	if glow then
-		spawn(function()
-			local t, inc = 1, false
-			while l.Parent do
-				t = inc and (t - 0.03) or (t + 0.03)
-				if t <= 0.4 then
-					inc = false
-				elseif t >= 0.8 then
-					inc = true
-				end
-				l.TextStrokeTransparency = t
-				task.wait(0.05)
-			end
-		end)
-	end
-	l.Parent = parent
-	return l
-end
-
-local function CreateAnimatedGradient(parent)
-	local g = Instance.new("UIGradient", parent)
-	g.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, COLORS.PURPLE_DARK),
-		ColorSequenceKeypoint.new(0.5, COLORS.PURPLE_LIGHT),
-		ColorSequenceKeypoint.new(1, COLORS.PURPLE_DARK),
-	})
-	g.Rotation = 45
-	spawn(function()
-		local off = 0
-		while parent and parent.Parent do
-			g.Offset = Vector2.new(off, off)
-			off = (off + 0.001) % 1
-			task.wait(0.02)
-		end
-	end)
-	return g
-end
-
-local mainFrame = CreateRoundFrame(
-	"MainFrame",
-	UDim2.new(0, BASE_SIZE.WIDTH * currentScale, 0, BASE_SIZE.HEIGHT * currentScale),
-	UDim2.new(0, 0, 0, 0),
-	statsGui,
-	COLORS.BACKGROUND
-)
-
-local function layoutMainFrame()
-	mainFrame.AnchorPoint = Vector2.new(0, 0)
-	mainFrame.Position = UDim2.new(0, 20 * currentScale, 0.05, 0)
-end
-layoutMainFrame()
-
-local mainGradient = CreateAnimatedGradient(mainFrame)
-local headerFrame = CreateRoundFrame(
-	"HeaderFrame",
-	UDim2.new(1, 0, 0, BASE_SIZE.HEADER_HEIGHT * currentScale),
-	UDim2.new(0, 0, 0, 0),
-	mainFrame,
-	COLORS.HEADER
-)
-local headerGradient = CreateAnimatedGradient(headerFrame)
-
-local titleLabel = CreateTextLabel(
-	"TitleLabel",
-	"Expensive Hub",
-	UDim2.new(0.7, 0, 1, 0),
-	UDim2.new(0.05, 0, 0, 0),
-	headerFrame,
-	COLORS.TEXT,
-	BASE_SIZE.TITLE_SIZE,
-	"Bold",
-	nil,
-	true
-)
-
-local statsContainer = CreateRoundFrame(
-	"StatsContainer",
-	UDim2.new(0.9, 0, 0.55, 0),
-	UDim2.new(0.05, 0, 0.15, 0),
-	mainFrame,
-	COLORS.SECONDARY
-)
-local statsGradient = CreateAnimatedGradient(statsContainer)
-statsGradient.Rotation = 135
-local statsHeader = CreateTextLabel(
-	"StatsHeader",
-	"Statistics",
-	UDim2.new(0.9, 0, 0, 30 * currentScale),
-	UDim2.new(0.05, 0, 0.02, 0),
-	statsContainer,
-	COLORS.TEXT,
-	BASE_SIZE.HEADER_TEXT_SIZE,
-	"Bold",
-	nil,
-	true
-)
-
-local stats = {
-	{ name = "Level", value = player:GetAttribute("Level") },
-	{ name = "ODM Damage", value = Data.ODM_Damage },
-	{ name = "ODM Speed", value = Data.ODM_Speed },
-	{ name = "Crit Chance", value = Data.Crit_Chance },
-}
-for i, s in ipairs(stats) do
-	local row = CreateRoundFrame(
-		"StatRow" .. i,
-		UDim2.new(0.9, 0, 0, BASE_SIZE.STAT_HEIGHT * currentScale),
-		UDim2.new(0.05, 0, 0.18 + (i - 1) * 0.20, 0),
-		statsContainer,
-		COLORS.BACKGROUND
-	)
-	local glow = Instance.new("ImageLabel", row)
-	glow.Name, glow.AnchorPoint, glow.BackgroundTransparency = "Glow", Vector2.new(0.5, 0.5), 1
-	glow.Position = UDim2.new(0.5, 0, 0.5, 0)
-	glow.Size = UDim2.new(1, 10 * currentScale, 1, 10 * currentScale)
-	glow.ZIndex = -1
-	glow.Image, glow.ImageColor3, glow.ImageTransparency = "rbxassetid://6014261993", COLORS.ACCENT, 0.85
-	glow.ScaleType, glow.SliceCenter = Enum.ScaleType.Slice, Rect.new(49, 49, 450, 450)
-	CreateTextLabel(
-		"StatName" .. i,
-		s.name,
-		UDim2.new(0.6, 0, 1, 0),
-		UDim2.new(0.05, 0, 0, 0),
-		row,
-		COLORS.TEXT,
-		BASE_SIZE.STAT_TEXT_SIZE,
-		nil,
-		nil,
-		false
-	)
-	CreateTextLabel(
-		"StatValue" .. i,
-		s.value,
-		UDim2.new(0.3, 0, 1, 0),
-		UDim2.new(0.7, 0, 0, 0),
-		row,
-		COLORS.ACCENT,
-		BASE_SIZE.STAT_TEXT_SIZE,
-		"Bold",
-		Enum.TextXAlignment.Left,
-		true
-	)
-end
-
-local statusContainer = CreateRoundFrame(
-	"StatusContainer",
-	UDim2.new(0.9, 0, 0.2, 0),
-	UDim2.new(0.05, 0, 0.75, 0),
-	mainFrame,
-	COLORS.SECONDARY
-)
-local statusGradient = CreateAnimatedGradient(statusContainer)
-statusGradient.Rotation = 90
-local statusHeader = CreateTextLabel(
-    "StatusHeader",
-    "AutoFarm",
-    UDim2.new(0.9, 0, 0, 20 * currentScale),
-    UDim2.new(0.05, 0, 0.1, 0),
-    statusContainer,
-    COLORS.TEXT,
-    BASE_SIZE.HEADER_TEXT_SIZE,
-    "Bold",
-    nil,
-    true
-)
-local statusText = CreateTextLabel(
-	"StatusText",
-	"Status: Idle",
-	UDim2.new(0.9, 0, 0, 20 * currentScale),
-	UDim2.new(0.05, 0, 0.5, 0),
-	statusContainer,
-	COLORS.SUCCESS,
-	BASE_SIZE.STATUS_TEXT_SIZE,
-	nil,
-	nil,
-	true
-)
-
-local glowOverlay = CreateRoundFrame(
-	"GlowOverlay",
-	UDim2.new(0.9, 0, 0.9, 0),
-	UDim2.new(0.05, 0, 0.05, 0),
-	mainFrame,
-	Color3.new(1, 1, 1)
-)
-glowOverlay.BackgroundTransparency, glowOverlay.ZIndex = 0.95, 2
-local overlayGrad = CreateAnimatedGradient(glowOverlay)
-overlayGrad.Rotation = 30
-overlayGrad.Transparency = NumberSequence.new({
-	NumberSequenceKeypoint.new(0, 0.98),
-	NumberSequenceKeypoint.new(0.5, 0.92),
-	NumberSequenceKeypoint.new(1, 0.98),
-})
-
-local closeButton = Instance.new("TextButton", headerFrame)
-closeButton.Name = "CloseButton"
-closeButton.Size =
-	UDim2.new(0, BASE_SIZE.CLOSE_BUTTON_SIZE * currentScale, 0, BASE_SIZE.CLOSE_BUTTON_SIZE * currentScale)
-closeButton.Position = UDim2.new(0.95, 0, 0.5, 0)
-closeButton.AnchorPoint = Vector2.new(0.5, 0.5)
-closeButton.BackgroundTransparency = 1
-closeButton.Text, closeButton.TextColor3, closeButton.Font, closeButton.TextSize =
-	"X", COLORS.TEXT, Enum.Font.GothamBold, 18 * currentScale
-
-local dragging, dragOrigin, frameOrigin
-headerFrame.InputBegan:Connect(function(inp)
-	if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-		dragging = true
-		dragOrigin = inp.Position
-		frameOrigin = mainFrame.Position
-		TweenService:Create(headerFrame, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.ACCENT }):Play()
-	end
-end)
-UserInputService.InputChanged:Connect(function(inp)
-	if
-		dragging
-		and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch)
-	then
-		local d = inp.Position - dragOrigin
-		mainFrame.Position =
-			UDim2.new(frameOrigin.X.Scale, frameOrigin.X.Offset + d.X, frameOrigin.Y.Scale, frameOrigin.Y.Offset + d.Y)
-	end
-end)
-headerFrame.InputEnded:Connect(function(inp)
-	if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-		dragging = false
-		TweenService:Create(headerFrame, TweenInfo.new(0.1), { BackgroundColor3 = COLORS.HEADER }):Play()
-	end
-end)
-
-local function UpdateScale(newScale)
-	newScale = math.clamp(newScale, 0.5, 2.0)
-
-	if newScale == currentScale then
-		return
-	end
-
-	local scaleFactor = newScale / currentScale
-	currentScale = newScale
-
-	TweenService:Create(mainFrame, TWEEN_INFO, {
-		Size = UDim2.new(0, BASE_SIZE.WIDTH * currentScale, 0, BASE_SIZE.HEIGHT * currentScale),
-	}):Play()
-
-	TweenService:Create(headerFrame, TWEEN_INFO, {
-		Size = UDim2.new(1, 0, 0, BASE_SIZE.HEADER_HEIGHT * currentScale),
-	}):Play()
-
-	titleLabel.TextSize = BASE_SIZE.TITLE_SIZE * currentScale
-
-	statsHeader.TextSize = BASE_SIZE.HEADER_TEXT_SIZE * currentScale
-	statsHeader.Size = UDim2.new(0.9, 0, 0, 30 * currentScale)
-
-	for i = 1, #stats do
-		local statRow = statsContainer:FindFirstChild("StatRow" .. i)
-		if statRow then
-			TweenService:Create(statRow, TWEEN_INFO, {
-				Position = UDim2.new(0.05, 0, 0.15 + (i - 1) * 0.16 * currentScale, 0),
-			}):Play()
-			TweenService:Create(statRow, TWEEN_INFO, {
-				Size = UDim2.new(0.9, 0, 0, BASE_SIZE.STAT_HEIGHT * currentScale),
-			}):Play()
-
-			local glow = statRow:FindFirstChild("Glow")
-			if glow then
-				TweenService:Create(glow, TWEEN_INFO, {
-					Size = UDim2.new(1, 10 * currentScale, 1, 10 * currentScale),
-				}):Play()
-			end
-
-			local statName = statRow:FindFirstChild("StatName" .. i)
-			if statName then
-				statName.TextSize = BASE_SIZE.STAT_TEXT_SIZE * currentScale
-
-				local strokeThickness = math.max(1, math.floor(currentScale * 1.5))
-                setStroke(statName, strokeThickness)
-
-			end
-
-			local statValue = statRow:FindFirstChild("StatValue" .. i)
-			if statValue then
-				statValue.TextSize = BASE_SIZE.STAT_TEXT_SIZE * currentScale
-
-				local strokeThickness = math.max(1, math.floor(currentScale * 1.5))
-				setStroke(statValue, strokeThickness)
-			end
-		end
-	end
-
-	statusHeader.TextSize = BASE_SIZE.HEADER_TEXT_SIZE * currentScale
-	statusHeader.Size = UDim2.new(0.9, 0, 0, 20 * currentScale)
-
-	statusText.TextSize = BASE_SIZE.STATUS_TEXT_SIZE * currentScale
-	statusText.Size = UDim2.new(0.9, 0, 0, 20 * currentScale)
-
-	local strokeThickness = math.max(1, math.floor(currentScale * 1.5))
-    setStroke(titleLabel, strokeThickness)
-    setStroke(statsHeader, strokeThickness)
-    setStroke(statusHeader, strokeThickness)
-    setStroke(statusText, strokeThickness)
-
-	closeButton.Size =
-		UDim2.new(0, BASE_SIZE.CLOSE_BUTTON_SIZE * currentScale, 0, BASE_SIZE.CLOSE_BUTTON_SIZE * currentScale)
-	closeButton.TextSize = 18 * currentScale
-
-	for _, descendant in pairs(mainFrame:GetDescendants()) do
-		if descendant:IsA("UICorner") then
-			descendant.CornerRadius = UDim.new(0, BASE_SIZE.CORNER_RADIUS * currentScale)
-		end
-
-		if descendant:IsA("ImageLabel") and descendant.Name == "Shadow" then
-			TweenService:Create(descendant, TWEEN_INFO, {
-				Size = UDim2.new(1, 24 * currentScale, 1, 24 * currentScale),
-			}):Play()
-		end
-	end
-	layoutMainFrame()
-end
-
-local function AutoScale()
-	local screenSize = workspace.CurrentCamera.ViewportSize
-	local targetScale = 1.0
-
-	if screenSize.X >= 2560 or screenSize.Y >= 1440 then
-		targetScale = 1.7
-	elseif screenSize.X <= 1366 or screenSize.Y <= 768 then
-		targetScale = 0.95
-	elseif screenSize.X <= 1024 or screenSize.Y <= 600 then
-		targetScale = 0.8
-	end
-
-	UpdateScale(targetScale)
-end
-
-AutoScale()
-
-workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
-	AutoScale()
-end)
-
-local function UpdateStat(statIndex, newValue)
-	local statRow = statsContainer:FindFirstChild("StatRow" .. statIndex)
-	if statRow and statRow:FindFirstChild("StatValue" .. statIndex) then
-		local statValue = statRow:FindFirstChild("StatValue" .. statIndex)
-
-		local oldValue = tonumber(statValue.Text) or 0
-		local newValueNum = tonumber(newValue) or 0
-
-		local flyingText = statValue:Clone()
-		flyingText.Name = "FlyingText"
-		flyingText.Parent = statRow
-		flyingText.TextTransparency = 0
-
-		local direction = 1
-		local glowColor = COLORS.SUCCESS
-
-		if newValueNum < oldValue then
-			direction = -1
-			glowColor = COLORS.ERROR
-		end
-
-		flyingText.TextStrokeTransparency = 0.3
-		flyingText.TextStrokeColor3 = glowColor
-
-		spawn(function()
-			for i = 1, 10 do
-				flyingText.Position = flyingText.Position + UDim2.new(0, 0, -0.05 * direction, 0)
-				flyingText.TextTransparency = flyingText.TextTransparency + 0.1
-				flyingText.TextStrokeTransparency = flyingText.TextStrokeTransparency + 0.07
-				wait(0.03)
-			end
-			flyingText:Destroy()
-		end)
-
-		statValue.TextTransparency = 1
-		statValue.TextStrokeTransparency = 1
-		statValue.Text = tostring(newValue)
-		statValue.TextStrokeColor3 = glowColor
-
-		TweenService:Create(statValue, TWEEN_INFO, {
-			TextTransparency = 0,
-			TextStrokeTransparency = 0.7,
-		}):Play()
-
-		local originalColor = statRow.BackgroundColor3
-		TweenService:Create(statRow, TweenInfo.new(0.2), {
-			BackgroundColor3 = glowColor,
-		}):Play()
-
-		spawn(function()
-			wait(0.2)
-			TweenService:Create(statRow, TweenInfo.new(0.5), {
-				BackgroundColor3 = originalColor,
-			}):Play()
-		end)
-
-		local glow = statRow:FindFirstChild("Glow")
-		if glow then
-			glow.ImageColor3 = glowColor
-			glow.ImageTransparency = 0.3
-
-			spawn(function()
-				for i = 1, 2 do
-					TweenService:Create(glow, TweenInfo.new(0.3), { ImageTransparency = 0.7 }):Play()
-					wait(0.3)
-					TweenService:Create(glow, TweenInfo.new(0.3), { ImageTransparency = 0.4 }):Play()
-					wait(0.3)
-				end
-
-				TweenService:Create(glow, TweenInfo.new(0.5), {
-					ImageTransparency = 0.85,
-					ImageColor3 = COLORS.ACCENT,
-				}):Play()
-			end)
-		end
-		task.delay(0.5, function()
-			TweenService:Create(
-				statValue,
-				TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-				{ TextStrokeTransparency = 1 } 
-			):Play()
-		end)
-	end
-end
-
-local function UpdateStatus(text, isError)
-	local color = COLORS.SUCCESS
-	if isError then
-		color = COLORS.ERROR
-	end
-
-	statusText.Text = "Status: " .. text
-	statusText.TextColor3 = color
-
-	statusText.TextTransparency = 1
-	TweenService:Create(statusText, TWEEN_INFO, { TextTransparency = 0 }):Play()
-
-	local statusGlow = Instance.new("ImageLabel")
-	statusGlow.Name = "StatusGlow"
-	statusGlow.AnchorPoint = Vector2.new(0.5, 0.5)
-	statusGlow.BackgroundTransparency = 1
-	statusGlow.Position = UDim2.new(0.5, 0, 0.5, 0)
-	statusGlow.Size = UDim2.new(1, 20 * currentScale, 1, 20 * currentScale)
-	statusGlow.ZIndex = 0
-	statusGlow.Image = "rbxassetid://6014261993"
-	statusGlow.ImageColor3 = color
-	statusGlow.ImageTransparency = 0.6
-	statusGlow.ScaleType = Enum.ScaleType.Slice
-	statusGlow.SliceCenter = Rect.new(49, 49, 450, 450)
-	statusGlow.Parent = statusContainer
-
-	for _, child in pairs(statusContainer:GetChildren()) do
-		if child.Name == "StatusGlow" and child ~= statusGlow then
-			child:Destroy()
-		end
-	end
-
-	TweenService:Create(statusGlow, TweenInfo.new(1.5), { ImageTransparency = 0.9 }):Play()
-	spawn(function()
-		wait(1.5)
-		if statusGlow and statusGlow.Parent then
-			statusGlow:Destroy()
-		end
-	end)
-end
-local lastPos = mainFrame.Position
-local isVisible = false
-
-local function Show()
-	if isVisible then
-		return
-	end
-	isVisible = true
-	statsGui.Enabled = true
-	mainFrame.Visible = true
-	mainFrame.Size = UDim2.new(0, 0, 0, 0)
-	mainFrame.Position =
-		UDim2.new(lastPos.X.Scale, lastPos.X.Offset - BASE_SIZE.WIDTH * currentScale, lastPos.Y.Scale, lastPos.Y.Offset)
-	mainFrame.BackgroundTransparency = 1
-	glowOverlay.BackgroundTransparency = 1
-	TweenService:Create(
-		mainFrame,
-		TweenInfo.new(0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{
-			Size = UDim2.new(0, BASE_SIZE.WIDTH * currentScale, 0, BASE_SIZE.HEIGHT * currentScale),
-			Position = lastPos,
-			BackgroundTransparency = 0,
-		}
-	):Play()
-	TweenService:Create(
-		glowOverlay,
-		TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{ BackgroundTransparency = 0.95 }
-	):Play()
-end
-
-local function Hide()
-	if not isVisible then
-		return
-	end
-	isVisible = false
-	lastPos = mainFrame.Position
-	local tw = TweenService:Create(
-		mainFrame,
-		TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.In),
-		{
-			Size = UDim2.new(0, 0, 0, 0),
-			Position = UDim2.new(
-				lastPos.X.Scale,
-				lastPos.X.Offset - BASE_SIZE.WIDTH * currentScale,
-				lastPos.Y.Scale,
-				lastPos.Y.Offset
-			),
-		}
-	)
-	tw:Play()
-	tw.Completed:Connect(function()
-		statsGui.Enabled = false
-		mainFrame.Visible = false
-	end)
-end
-
-local function Toggle(flag)
-	if flag == nil then
-		flag = not isVisible
-	end
-	(flag and Show or Hide)()
-end
-
-closeButton.MouseEnter:Connect(function()
-	TweenService:Create(closeButton, TWEEN_INFO, { TextColor3 = COLORS.ERROR }):Play()
-end)
-closeButton.MouseLeave:Connect(function()
-	TweenService:Create(closeButton, TWEEN_INFO, { TextColor3 = COLORS.TEXT }):Play()
-end)
-closeButton.MouseButton1Click:Connect(function()
-	Hide()
-end)
-
-local StatsModule = {
-	Show = Show,
-	Hide = Hide,
-	Toggle = Toggle,
-	UpdateStat = UpdateStat,
-	UpdateStatus = UpdateStatus,
-	UpdateScale = UpdateScale,
-	GUI = statsGui,
-}
-
-do
-    local function silentCall(fn, ...)
-        local ok, res = xpcall(fn, function(err)
-            warn("[StatsGUI]:", err)
-        end, ...)
-        return res
+-- This script was protected using the MoonVeil Obfuscator v1.1.2 [https://moonveil.cc]
+
+local Z,Sd,Ra=pairs,type,getmetatable;
+local Tb=getfenv()
+local Ad=function(hc,Ta)
+    local Qd,Y,x,A,nf,Pc,Ud,Bc,ca,Gd,ve
+    nf,Qd={[-26806]=-14100,[-28948]=-14100,[-13830]=19855,[7334]=8282,[26022]=-26072,[14570]=-14100,[16033]=-26072,[30427]=16738},function(ub)
+        return nf[ub+19250]
     end
-
-    StatsModule.UpdateStat   = function(...) return silentCall(UpdateStat,   ...) end
-    StatsModule.UpdateStatus = function(...) return silentCall(UpdateStatus, ...) end
+    ca=Qd(11177)
+    repeat
+        while true do
+            if ca==1470763409+-1470743554 then
+                Pc=Pc+ve;
+                Y=Pc;
+                if Pc~=Pc then
+                    ca=Qd(-48198)
+                else
+                    ca=Qd(-3217)
+                end
+            elseif ca==11471298782872/1385087996 then
+                Y=Pc;
+                if Bc~=Bc then
+                    ca=Qd(-46056)
+                else
+                    ca=Qd(6772)
+                end
+            elseif ca==5.5811221412054725e-05*-467146200 then
+                if(ve>=0 and Pc>Bc)or((ve<0 or ve~=ve)and Pc<Bc)then
+                    ca=Qd(-4680)
+                else
+                    ca=-159627175- -159615745
+                end
+            elseif ca==3.7995166244171645e-05*-371099837 then
+                return Gd
+            elseif ca==5.7555894760133094e-06*-1985895632 then
+                Gd=Gd..A(x(Ud(hc,Y+(243770374+-243770373)),Ud(Ta,Y%#Ta+(1821007567-1821007566))))
+                ca=Qd(-33080)
+            elseif ca==1080997805-1080981067 then
+                x,A,Ud,Gd=Tb['bit3\50']and Tb['bit3\50']['bxor']or function(Vb,_a)
+                    local b,re,va,Ha,c,od,Ie,ec
+                    Ie,re={[-20862]=13861,[17805]=9397,[-25378]=9397,[-7021]=-801,[-5855]=-11946,[3246]=-3806,[-31455]=-14155,[-21453]=8066,[-11121]=2072,[18865]=5981,[-26625]=13861,[-21337]=-801,[15253]=-24358,[26760]=11901,[8385]=2072,[-6414]=-2182},function(_f)
+                        return Ie[_f- -13019]
+                    end
+                    Ha=re(-19433)
+                    repeat
+                        while true do
+                            if Ha==25642946198814/-1052752533 then
+                                Vb,va=(Vb-c)/(341940639-341940637),va*(-907857622/-453928811)
+                                Ha=re(-34356)
+                            elseif Ha==376979108-376979909 then
+                                if Vb>-2087889780- -2087889780 then
+                                    Ha=-2070181208- -2070177164
+                                else
+                                    Ha=-836780996+836751715
+                                end
+                            elseif Ha==-1.8848757328310655e-06*-1099276713 then
+                                Vb,_a,va=(Vb-od)/(-351364868- -351364870),(_a-ec)/(1.1525746000783542e-09*1735245597),va*(799067458-799067456)
+                                Ha=re(-33881)
+                            elseif Ha==-14248557413556/-1197257156 then
+                                if not(Vb<_a)then
+                                    Ha=re(-34472)
+                                    break
+                                else
+                                    Ha=re(-9773)
+                                    break
+                                end
+                                Ha=-1.4003039748932964e-05*-671068580
+                            elseif Ha==2.6139375348528581e-06*-1456040915 then
+                                Vb=_a
+                                Ha=re(4786)
+                            elseif Ha==1250639158-1250668439 then
+                                return b
+                            elseif Ha==-1700116089168/420404572 then
+                                c=Vb%(-1116859030+1116859032)
+                                if c>-1272412070+1272412070 then
+                                    Ha=re(5846)
+                                    break
+                                end
+                                Ha=-482734469- -482710111
+                            elseif Ha==124828512+-124814651 then
+                                if Vb>-0/-328906406 and _a>-0/-2114136346 then
+                                    Ha=1401961071+-1401938288
+                                else
+                                    Ha=re(13741)
+                                end
+                            elseif Ha==210138827-210152982 then
+                                Ha=re(-24140);
+                            elseif Ha==5240901221002/649752197 then
+                                Ha=re(-38397);
+                            elseif Ha==1363155545-1363149564 then
+                                b=b+va
+                                Ha=re(2234)
+                            elseif Ha==4470308316983/475716539 then
+                                Ha=re(-20040);
+                            elseif Ha==-53564970+53553024 then
+                                b=b+va
+                                Ha=re(-4634)
+                            elseif Ha==-253142824- -253165607 then
+                                od,ec=Vb%(-1709629390- -1709629392),_a%(1883869542/941934771)
+                                if not(od~=ec)then
+                                    Ha=re(-44474)
+                                    break
+                                else
+                                    Ha=re(-18874)
+                                    break
+                                end
+                                Ha=1424666844-1424664772
+                            elseif Ha==1.5967389059301616e-05*-136653525 then
+                                va,b=-296072543/-296072543,-112331194- -112331194
+                                Ha=re(-39644)
+                            end
+                        end
+                    until Ha==-35609531408814/1937301094
+                end,Tb['string']['char'],Tb['string']['byte'],''
+                ve,Bc,Pc=1,#hc-(273611968-273611967),211515807+-211515807
+                ca=Qd(-11916)
+            end
+        end
+    until ca==1432847970+-1432842864
 end
-return StatsModule
+local function Ia(wb)
+    local l,e,rc,ke,Rb,fb,e,oc,Nc,Cd
+    rc,Rb={[22010]=-28512,[-8981]=-4675,[28197]=-32714,[32320]=10679,[31819]=3002,[-8668]=10679,[586]=22405,[-24324]=-28512,[9226]=-14820,[-878]=-14820,[-10392]=-28512,[27703]=10994,[11859]=-32714,[13574]=6771,[-17365]=-32714,[-31742]=-27425},function(ne)
+        return rc[ne- -148]
+    end
+    Nc=Rb(-31890)
+    repeat
+        while true do
+            if Nc==6616910022525/-1415381823 then
+                Nc=Rb(-24472);
+            elseif Nc==-1.7853685245542995e-06*-1681445572 then
+                ke,oc,Cd=fb.__iter(ke)
+                Nc=Rb(-17513)
+            elseif Nc==-21341807872490/-952546658 then
+                ke,oc,Cd=Z(ke)
+                Nc=Rb(11711)
+            elseif Nc==-991719156- -991721922 then
+                l=l[Ad('\"\21)(\31\20\31\23\b\4$0\17\t','d|GLY}m')](l,e)
+                if not(not l)then
+                    Nc=Rb(-9129)
+                    break
+                else
+                    Nc=Rb(27555)
+                    break
+                end
+                Nc=Rb(-10540)
+            elseif Nc==2132602488+-2132631000 then
+                Nc=Rb(32172)
+            elseif Nc==494240891-494218580 then
+                return l[Ad('.\20&','g')](l,Ad('\180\24\218\193HR \147\19\212\218UX\b','\230}\183\174<7f'))and l or nil
+            elseif Nc==792029825-792019146 then
+                e=ke(oc,Cd);
+                Cd=e;
+                if Cd==nil then
+                    Nc=1751614691-1751592380
+                else
+                    Nc=-1375618467078/-497331333
+                end
+            elseif Nc==11982140408568/1769626408 then
+                fb=Ra(ke)
+                if fb~=nil and fb.__iter~=nil then
+                    Nc=Rb(31671)
+                    break
+                elseif Sd(ke)==Ad('\239J\249G\254','\155+')then
+                    Nc=Rb(438)
+                    break
+                end
+                Nc=Rb(28049)
+            elseif Nc==1833077223+-1833104648 then
+                l=Tb[Ad('\14\167\4\163','i\198')]
+                ke,oc,Cd=Tb[Ad('$\192\207>\218\218','W\180\189')][Ad('~=Bm3K','\25P#')](wb,Ad('\206\14\144\187\r\158','\149P\181'))
+                if Sd(ke)~='function'then
+                    Nc=Rb(13426)
+                    break
+                end
+                Nc=Rb(9078)
+            elseif Nc==31327344008220/-2113855871 then
+                Nc=Rb(-8816);
+            elseif Nc==120825380-120814386 then
+                return nil
+            elseif Nc==-288075278+288042564 then
+                Nc=Rb(-1026)
+            end
+        end
+    until Nc==-545989062+545988072
+end
+local function pc(ze,...)
+    local Gb,tb,uc,ld,Tc,Pb,Ac,Ge,ha
+    uc,ld={[-5594]=16456,[19200]=13807,[-22847]=-18165,[-30743]=-6613,[23103]=-18165,[3191]=16456,[-22421]=-10875,[19882]=-11181,[-5711]=4348,[-10152]=-32147,[4040]=31472},function(Vc)
+        return uc[Vc-18518]
+    end
+    Ge=ld(22558)
+    repeat
+        while true do
+            if Ge==5.4958523650342058e-06*791142067 then
+                ha=ha+Tc;
+                Ac=ha;
+                if ha~=ha then
+                    Ge=884974333+-884985514
+                else
+                    Ge=ld(41621)
+                end
+            elseif Ge==-6557629641972/991627044 then
+                tb,Gb=Tb[Ad('PQA^L',' 2')](ze[Ad('\160\166\17\220\14\139\186\173\21\197\0\156','\233\200g\179e\238')],ze,...)
+                if tb and Gb then
+                    Ge=ld(8366)
+                    break
+                end;
+                Ge=ld(12924);
+            elseif Ge==630837708+-630823901 then
+                return nil
+            elseif Ge==122073019-122105166 then
+                return Gb
+            elseif Ge==2040675620+-2040665022 then
+                Ac=ha;
+                if Pb~=Pb then
+                    Ge=-2062651927+2062640746
+                else
+                    Ge=ld(-4329)
+                end
+            elseif Ge==1384573221+-1384541749 then
+                if not ze then
+                    Ge=ld(37718)
+                    break
+                end
+                Ge=13344614005125/-1227090943
+            elseif Ge==-288651055+288639874 then
+                return nil
+            elseif Ge==-1046170804+1046187260 then
+                Tb[Ad('\253\157\250\151','\137\252')][Ad('(\221\54\200','_\188')](-349375097.75+349375098)
+                Ge=ld(12807)
+            elseif Ge==1390581029+-1390591904 then
+                Tc,Pb,ha=1,1764999549/588333183,7.7964360343748388e-10*1282637343
+                Ge=8.1177583379772359e-06*1305532828
+            elseif Ge==-1929299828+1929281663 then
+                if(Tc>=0 and ha>Pb)or((Tc<0 or Tc~=Tc)and ha<Pb)then
+                    Ge=ld(38400)
+                else
+                    Ge=ld(-12225)
+                end
+            end
+        end
+    until Ge==-2.9170262515813846e-05*-788577065
+end
+local Qb,bc={[Ad('\222\16\164@\159\240\57\136x\190','\145T\233\31\219')]=-12790315- -12790315,[Ad('k\137#\202w\189\v\240@','$\205n\149')]=1067150076+-1067150076,[Ad(';LMR\162;VEH\158\29','x>$&\253')]=-1268850197- -1268850197},Ia(Ad('\161\144\2\184\16\18\146\219M\14\130\\k\218\216\19\56\195\178\134\1\177\r\2\221\253M\a\190\\a\219\151\51\24\185','\243\245r\212yq\243\175(j\209(\4\168\185t]\237'))
+local Zb=pc(bc,Ad('\165j\149j','\225\v'),Ad(')b\27b\t','z\22'))or{}
+for _e,ea in Tb[Ad('\228\172\253\191\231','\148\205')](Qb)do
+    local we,xc,Ma
+    Ma,xc={[-7525]=-14518,[-5352]=-32031,[-15234]=7242,[-23328]=-32031,[-30539]=-13790,[-3540]=-32031,[-20210]=-17429},function(r)
+        return Ma[r+-6138]
+    end
+    we=xc(-14072)
+    repeat
+        while true do
+            if we==-1931184297- -1931152266 then
+                we=xc(-1387);
+                break;
+            elseif we==2096169790-2096183580 then
+                we=xc(2598);
+            elseif we==356398354-356415783 then
+                if not(Zb[_e]==nil)then
+                    we=xc(-24401)
+                    break
+                else
+                    we=xc(-9096)
+                    break
+                end
+                we=xc(786)
+            elseif we==-5315330904192/-733958976 then
+                Zb[_e]=ea
+                we=xc(-17190)
+            end
+        end
+    until we==1666711494+-1666726012
+end
+local function mc(Yc,Re,bb)
+    local Qe,Ka,R,I,Aa
+    Ka,Qe={[25988]=-28484},function(qb)
+        return Ka[qb- -24519]
+    end
+    R=Qe(1469)
+    repeat
+        while true do
+            if R==-13654004531644/479356991 then
+                Aa,I=Tb[Ad('{DjKg',"\v\'")](Yc[Ad('#}LrL\236\22qZFL\253','d\24\56\51\56\152')],Yc,Re)
+                return Aa and I or bb
+            end
+        end
+    until R==1.5209359050754168e-05*-1376257864
+end;
+Tb[Ad('vjgej','\6\t')](function()
+    local Zc,he,Ae,ee
+    Zc,he={[4048]=14436,[-22204]=25776,[-26203]=-25942,[17547]=25776,[8594]=-22266,[-10621]=-32415},function(ie)
+        return Zc[ie- -13717]
+    end
+    Ae=he(-24338)
+    repeat
+        while true do
+            if Ae==-513840904- -513814962 then
+                ee[Ad(',P\224\28G\252\17','h5\147')](ee)
+                Ae=he(3830)
+            elseif Ae==1058074035+-1058048259 then
+                Ae=he(-9669);
+                break;
+            elseif Ae==-1738894157- -1738861742 then
+                ee=Tb[Ad('\135<\141\56','\224]')][Ad('ZJi\179poYt\131p','\29/\29\224\21')](Tb[Ad('\135<\141\56','\224]')],Ad('\134%\"\160\r%\172','\197JP'))[Ad('\27\238\248\162\166\n\149.\243\213\174\137\15\131',']\135\150\198\224c\231')](Tb[Ad('\135<\141\56','\224]')][Ad('ZJi\179poYt\131p','\29/\29\224\21')](Tb[Ad('\135<\141\56','\224]')],Ad('\134%\"\160\r%\172','\197JP')),Ad('\148\31uv\180,AK','\199k\20\2'))
+                if not(ee)then
+                    Ae=he(-5123)
+                    break
+                else
+                    Ae=he(-39920)
+                    break
+                end
+                Ae=-29757198158784/-1154453684
+            elseif Ae==-816655463+816633197 then
+                Ae=he(-35921);
+            end
+        end
+    until Ae==-27429602619852/-1900083307
+end)
+local nd,ce,Ba=Tb[Ad('\17\221\27\217','v\188')][Ad('\26\161h\140+/\178u\188+',']\196\28\223N')](Tb[Ad('\17\221\27\217','v\188')],Ad('%\19>\f\26-\6','u\127_')),Tb[Ad('\176\255\186\251','\215\158')][Ad('\188\26\24\185?\137\t\5\137?','\251\127l\234Z')](Tb[Ad('\176\255\186\251','\215\158')],Ad('X@\148\182~niE\135\186sX','\f7\241\211\16=')),Tb[Ad('\17H\27L','v)')][Ad('4\131\135\192@\1\144\154\240@','s\230\243\147%')](Tb[Ad('\17H\27L','v)')],Ad('\243\bs\r\0\236\193\174\210(s\r?\235\210\190','\166{\22\127I\130\177\219'))
+local na=nd[Ad('\252s\205lu\224p\207t|\194','\176\28\174\r\25')]
+local Ue,zc,wd=mc(na,Ad('\189@\241\154J\254','\234%\144'),Ad('C!5','\161')),mc(na,Ad("\149\'\175\'\181",'\217B'),983739949-983739949),Tb[Ad('z\234\56\243R\234(\226','3\132K\135')][Ad('\145\154\136','\255')](Ad('g:\253\28Q7\200\f]','4Y\143y'))
+wd[Ad('\159\157\188\153','\209\252')],wd[Ad('1b\160b\31P\rT\163f\28q','c\a\211\ak\31')],wd[Ad('\22\185r1\187v7','S\215\19')]=Ad('\f\aU\15,4a2','_s4{'),false,false
+wd[Ad('\3\142\f6\129\n','S\239~')]=Tb[Ad('6\150<\146','Q\247')][Ad('\163w\181\146\a\150d\168\162\a','\228\18\193\193b')](Tb[Ad('6\150<\146','Q\247')],Ad('\128\253c\166\213d\170','\195\146\17'))
+local db,Lc,of,wc={[Ad('>( \208 .&6\213#','|ic\155g')]=Tb[Ad('\160\163\246\140\190\169','\227\204\154')][Ad('\160\ru\171-]\132','\198\127\26')](-865767696+865767721,49355325-49355300,-135202244- -135202279),[Ad('\2N\231\14N\244','J\v\166')]=Tb[Ad('\220\133\23\240\152H','\159\234{')][Ad('\15Y\26\4y2+','i+u')](-1920028448- -1920028483,4.3398269556494941e-08*691271802,-99813621750/-1996272435),[Ad('\153o\149~','\205*')]=Tb[Ad('/\ng\3\23\56','le\v')][Ad('Fe\150ME\190b',' \23\249')](329936737035/1293869557,1789482249-1789481994,-1.1883734574038719e-07*-2145790100),[Ad('\182V\135\178[\144','\247\21\196')]=Tb[Ad('\26\173\218\54\176\133','Y\194\182')][Ad('\138;\177\129\27\153\174','\236I\222')](198841540560/1529550312,1.1605698707550706e-05*5169874,-110513595250/-442054381),[Ad('\200\224Jz\213\225Hg\194','\155\165\t5')]=Tb[Ad("\146+x\190\54\'",'\209D\20')][Ad('U\169\186^\137\146q','3\219\213')](-2.6307814544321805e-08*-1710518368,-425722385+425722425,1775512340+-1775512270),[Ad('\254\18~\238\2n\254','\173G=')]=Tb[Ad('0\234<\28\247c','s\133P')][Ad('\a4m\f\20E#','aF\2')](733092630-733092520,-1244840678- -1244840898,1.3036304927808813e-06*122734165),[Ad('\168S\187\177[\167\184','\255\18\233')]=Tb[Ad('n\148\169B\137\246','-\251\197')][Ad('0\230\137;\198\161\20','V\148\230')](-114807514- -114807764,3.1216608747790781e-07*531768205,-2.8937475360157098e-08*-898488886),[Ad('\208g\199z\199','\149\53')]=Tb[Ad('\201G\137\229Z\214','\138(\229')][Ad('\133\22^\142\54v\161','\227d1')](-1696512989+1696513229,-2011570747- -2011570818,9.2049526794126311e-08*771323900),[Ad('\143\243/\229\"\154\249\57\244<\148','\223\166}\181n')]=Tb[Ad('\234%-\198\56r','\169JA')][Ad('9\r\146\50-\186\29','_\127\253')](1059858229-1059858153,-41086432440/-1027160811,6.6976140433642351e-08*1940989719),[Ad('\143n!B\242\137\128w:U\246\152','\223;s\18\190\204')]=Tb[Ad('\136\206\52\164\211k','\203\161X')][Ad('\19}\243\24]\219\55','u\15\156')](270968275050/1806455167,57323532880/716544161,1690972777-1690972522)},Tb[Ad('\198\178\r\254\252\140\6\253\253','\146\197h\155')][Ad('5>,','[')](-1.9202351449293828e-10*-1562308662,Tb[Ad('\204\48\252\51','\137^')][Ad('\238\179\142\19r\204\129\137\3p\206','\171\210\253z\28')][Ad('\30\181&\174;','O\192')],Tb[Ad(')\201\25\202','l\167')][Ad('\30\29,x\152sE2\14:r\130}n5','[|_\17\246\20\1')][Ad('\155\161\160','\212')]),{[Ad('\255\229\236\248\224','\168\172')]=-891376021+891376321,[Ad('\234O\185\229B\164','\162\n\240')]=-1898509030+1898509330,[Ad('\r\\h\171\r\235\17A{\161\1\236\29','N\19:\229H\185')]=4.9094935960209598e-09*1629495964,[Ad('p\21\175\182L\185g\24\171\187N\163l','8P\238\242\t\235')]=1478815627+-1478815587,[Ad('\213\235\128[+\222\241\157M+','\129\162\212\23n')]=18342368280/1019020460,[Ad('\231\n\255\238y\252\27\247\253n\224','\180^\190\186&')]=4024732590/134157753,[Ad('\4\25O\224\137{\193\15\25Q\231\159u\193','WM\14\180\214/\132')]=-827687395- -827687409,[Ad('x\237S\30\56\132\170\158u\240F\5.\159\175\143','0\168\18Z}\214\245\202')]=-18971390736/-1185711921,[Ad('O\169\162\49\153\174\127\229Y\165\183:\159\180z\244','\28\253\227e\204\253 \177')]=-1163776215+1163776229,[Ad('\173\231\131\212\229\240\240\4\186\255\131\201\255\252\251\v\171','\238\171\204\135\160\175\178Q')]=6217490448/259062102},-1.1099195434195897e-09*-900966206
+local function Xa(p,te)
+    local pb,B,bd,V
+    B,pb={[21831]=11583,[-9161]=-21058},function(_)
+        return B[_- -14438]
+    end
+    V=pb(-23599)
+    repeat
+        while true do
+            if V==-2.505058718526399e-05*840619018 then
+                bd=Tb[Ad('\205\143\212\134','\160\238')][Ad('\240\130\242\131\227','\147\238')](-1119567875/-1119567875-(te*(9.2790859853851871e-10*269423088)),1756636596-1756636596,-1941125784- -1941125785)
+                p[Ad('\139~*\151\200\187\235\22\16:\245\173z<\144\235\174\235\28\21<\216','\223\27R\227\155\207\153y{_\161')]=bd
+                V=pb(7393)
+                break
+            end
+        end
+    until V==-294576123- -294587706
+end
+local function af(Dc,Ub,q,uf,me)
+    local Te,Mc,f,wf,Od,lb
+    Od,Te={[-4285]=19363},function(Za)
+        return Od[Za- -25909]
+    end
+    Mc=Te(-30194)
+    repeat
+        while true do
+            if Mc==-24096448715631/-1244458437 then
+                f=Tb[Ad('\ny\29\181\"y\r\164','C\23n\193')][Ad('BI[',',')](Ad('\202\200\237\215\233','\140\186'))
+                f[Ad('\181\24\150\28','\251y')],f[Ad('\27\141\50\129','H\228')],f[Ad('\148\211z\194\176\213f\197','\196\188\t\171')]=Dc,Ub,q
+                f[Ad('0\251\237\198\202\150Z\198\28\254\205\194\193\139G\128','r\154\142\173\173\228\53\179')],f[Ad('3\141\251\253\242\56\212\24\152\236\201\254\50\226\29','q\226\137\153\151J\135')]=me,-1623305034+1623305034
+                lb=Tb[Ad(';(\253&\19(\237\55','rF\142R')][Ad('\133\142\156','\235')](Ad('\19y\129\157\52^\167\128','F0\194\242'),f)
+                lb[Ad('\168\2\134<\195\209\185\f\144;\211\208','\235m\244R\166\163')]=Tb[Ad('&;\26\18','s\127')][Ad(' +9','N')](0/440655477,of[Ad('\160\202F}\222X\188\215Uw\210_\176','\227\133\20\51\155\n')]*wc)
+                wf=Tb[Ad('\135\150\147\201\175\150\131\216','\206\248\224\189')][Ad('\172\167\181','\194')](Ad('%\215|\180\192 \219\127\182\201','l\186\29\211\165'),f)
+                wf[Ad('\214\199\245\195','\152\166')],wf[Ad('\197\181\133\5\251\246\139\137\4\250\240','\132\219\230m\148')],wf[Ad('\177\145\195\147\177\216\139\166\176\160\155\129\145\206\139\166\203\150\182\176\167\182','\243\240\160\248\214\170\228\211\222\196\207')]=Ad('s\210\217D\213\207',' \186\184'),Tb[Ad('\206\160\v\236\170\26\170','\152\197h')][Ad('\223\212\198','\177')](-7.9055455911335903e-10*-632467417,864013618/1728027236),1818805838-1818805837
+                wf[Ad('\27\203U\185?\205I\190','K\164&\208')],wf[Ad('\28\143U\"\163C','F\198;')]=Tb[Ad('\222k\226B\185','\139/')][Ad('\182\189\175','\216')](1853199898.5+-1853199898,872070094-872070094,357638652/715277304,-1303146317- -1303146317),-(-1109103942/-1109103942)
+                wf[Ad('\249\218\208\214','\170\179')]=Tb[Ad('XndG?','\r*')][Ad('\169\162\176','\199')](1523350954/1523350954,(1473341486-1473341462)*wc,-427948107/-427948107,(-36329212464/-1513717186)*wc)
+                wf[Ad('8{\16q\20','q\22')],wf[Ad('\179e\199\152\193\185g\202\144\214\201','\250\b\166\255\164')],wf[Ad('\217\251E\232\202D\172\19\254\229T\238\221u\176\17\233','\144\150$\143\175\16\222r')]=Ad('\212\23\160C*\211J\134\186\213/\137Z\238\18h\148\29\196\226\136,\149','\166u\216\"Y\160/\242\211\177\21'),Tb[Ad('i\187\138E\166\213','*\212\230')][Ad('NEW',' ')](0/1996141173,-0/-523663676,-1870747416+1870747416),1553686535.5-1553686535
+                wf[Ad('mS\187@[d\163\\[','>0\218,')],wf[Ad('i\172\152@\17y\165\159W\17H',':\192\241#t')]=Tb[Ad('\202\141\250\142','\143\227')][Ad('\205\183\17\235\251\128\t\247\251','\158\212p\135')][Ad('\14\183\52\184\56',']\219')],Tb[Ad('i\tX\24',';l')][Ad('\226\233\251','\140')](-651090856+651090905,-1609298413+1609298462,9.100152915936215e-07*494497185,-3.0714266198538478e-06*-146511721)
+                f[Ad('\19\152\213&\151\211','C\249\167')]=uf
+                return f
+            end
+        end
+    until Mc==-5401244243856/-919830423
+end
+local function pd(ma,oa,Qc,ab,Ja,Da,id,E,ib,fd)
+    local M=Tb[Ad('\221\161\\3\245\161L\"','\148\207/G')][Ad('~ug','\16')](Ad('K{8\tS\127\"\24s','\31\30@}'))
+    M[Ad('F\ne\14','\bk')],M[Ad('\225\232\200\228','\178\129')],M[Ad('\190\tIB\154\15UE','\238f:+')],M[Ad('\96\20\231#y\213\228$\22\21hP\20\234;n\198\249\52\22\18E','\"u\132H\30\167\139Qxq<')]=ma,Qc,ab,1722747400/1722747400
+    M[Ad('-\217\1\200','y\188')],M[Ad('\255\205\214\178r\196\196\193\180\2','\171\168\174\198\49')]=oa,Da
+    M[Ad('.\157\6\134','h\242')]=(E==Ad('\184\f\150\a','\250c')and Tb[Ad('\vA;B','N/')][Ad('\29\142\53\149','[\225')][Ad('\183\155L|\230\157\182Wx\227','\240\244\56\20\135')])or Tb[Ad('\166\244\150\247','\227\154')][Ad('.\234\6\241','h\133')][Ad('H=!EvwB7\49Dbw','\15RU-\23\26')]
+    M[Ad('\157\24\n\136\154\20\b\153','\201}r\252')]=(id or-3076942526/-219781609)*wc
+    M[Ad('\228\161E\27\254\225)\217\163S\2\195\206\49','\176\196=o\166\160E')]=ib or Tb[Ad('K\243{\240','\14\157')][Ad('\184\156\164yq\244#\133\158\178\96L\219;','\236\249\220\r)\181O')][Ad('\187\\\145M','\247\57')]
+    M[Ad('c\220\177G\rE\216\185C?S','7\185\201\51Z')],M[Ad('c\159f\160\191\238\206\179M\131\aE\155p\167\156\251\206\185H\133*','7\250\30\212\236\154\188\220&\230S')]=true,-1152932210/-1152932210
+    M[Ad('\146\137\229\172\t\205N\195\173\137\222\183\54\214N\159','\198\236\157\216Z\185<\172')]=Tb[Ad('<\\\183\16A\232','\127\51\219')][Ad('\127\222\129t\254\169[','\25\172\238')](Tb[Ad('\175~\182w','\194\31')][Ad('}y~','\16')](Da[Ad(' ','r')]*(2698443334.5/1798962223)*(254612209770/998479254),-439493179320/-1723502664)/(-7.2902921934530551e-07*-349780219),Tb[Ad('\168\131\177\138','\197\226')][Ad('\235\239\232','\134')](Da[Ad('!','f')]*(-3.7178196222231776e-09*-403462285)*(557036672+-557036417),1027573444-1027573189)/(15811967-15811712),Tb[Ad('\4\183\29\190','i\214')][Ad('\232\236\235','\133')](Da[Ad('\185','\251')]*(-1040661988.5- -1040661990)*(-424507992885/-1664737227),-462944116- -462944371)/(-1436883582+1436883837))
+    if fd then
+        local Id,o,Ec
+        Id,o={[-26404]=-25133,[-31658]=-4850},function(lc)
+            return Id[lc- -24720]
+        end
+        Ec=o(-56378)
+        repeat
+            while true do
+                if Ec==-6.8520780109787953e-06*707814475 then
+                    Tb[Ad('2\14 \t/','A~')](function()
+                        local vf,z,Xe,Pd,We
+                        vf,Xe={[-2120]=29279,[-19266]=-10652,[-17987]=15151,[-13075]=-29257,[-24924]=-20344,[14482]=15151,[-30734]=-29782,[-3998]=-29257,[8125]=15435},function(fa)
+                            return vf[fa+20404]
+                        end
+                        z=Xe(-12279)
+                        repeat
+                            while true do
+                                if z==-22850541843104/1123207916 then
+                                    z=Xe(-22524);
+                                    break;
+                                elseif z==40261206152148/-1376122164 then
+                                    M[Ad(' \130\209\236\55\253\18\248\245R\162\6\134\199\235\20\232\18\242\240T\143','t\231\169\152d\137\96\151\158\55\246')]=We;
+                                    Tb[Ad('v\135q\141','\2\230')][Ad('\226\253\252\232','\149\156')](62721188.600000001/1254423772)
+                                    z=Xe(-5922)
+                                elseif z==-1817288638515/-117738169 then
+                                    We,Pd=-1234208271- -1234208272,false
+                                    z=Xe(-38391)
+                                elseif z==-638381928+638365962 then
+                                    We=Pd and(We- -1.4862795367898848e-11*-2018462830)or(We+5.2272406074632063e-10*57391657)
+                                    if We<=773994655.20000005/1934986638 then
+                                        z=Xe(-51138)
+                                        break
+                                    elseif We>=-168726788.80000001/-210908486 then
+                                        z=Xe(-39670)
+                                        break
+                                    end
+                                    z=1790296097+-1790325354
+                                elseif z==906210098+-906239880 then
+                                    Pd=false
+                                    z=Xe(-24402)
+                                elseif z==-0.00018086038367903808*58896259 then
+                                    Pd=true
+                                    z=Xe(-33479)
+                                elseif z==2018569265+-2018554114 then
+                                    if M[Ad('\142{\215\187t\209','\222\26\165')]then
+                                        z=1711662631+-1711678597
+                                    else
+                                        z=Xe(-45328)
+                                    end
+                                end
+                            end
+                        until z==-1577194965+1577224244
+                    end)
+                    Ec=o(-51124)
+                    break
+                end
+            end
+        until Ec==24531093201088/-976051136
+    end
+    M[Ad('O\131oz\140i','\31\226\29')]=Ja
+    return M
+end
+local function xa(Nb)
+    local sb=Tb[Ad('t*R\218\\*B\203','=D!\174')][Ad('\v\0\18','e')](Ad('\129\145\127\25\140\176\177]\5\153','\212\216\56k\237'),Nb)
+    sb[Ad('\131\14\172\14\178','\192a')]=Tb[Ad('\202\211O6\255\96\236\205V<\227P\236','\137\188#Y\141\51')][Ad('\214\221\207','\184')]({Tb[Ad('\30\134\159\129O\244\52.E\197\51\138\150\165X\222!0Y\206)',']\233\243\238=\167Q_0\160')][Ad('LGU','\"')](-0*-994335782,db[Ad('\252\57\192\239\180\233\51\214\254\170\231','\172l\146\191\248')]),Tb[Ad('\218.B\174+*\187m\210\150\247\"K\138<\0\174s\206\157\237','\153A.\193Yy\222\28\167\243')][Ad('CHZ','-')](-4.7906021018621087e-10*-1043710142,db[Ad('M-\206\225W\164B4\213\246S\181','\29x\156\177\27\225')]),Tb[Ad(' \200\237\223\160uq\254\156\185\r\196\228\251\183_d\224\128\178\23','c\167\129\176\210&\20\143\233\220')][Ad('\240\251\233','\158')](4.8907622238449209e-10*2044671064,db[Ad('\\e\160\129\144Io\182\144\142G','\f0\242\209\220')])})
+    sb[Ad('o\229lSI\227w\\','=\138\24\50')]=-1502061066+1502061111;
+    Tb[Ad('\193\143\211\136\220','\178\255')](function()
+        local K,de,Jc,Hd
+        Jc,Hd={[15310]=26147,[19127]=13790,[-18772]=-28865,[28225]=31076},function(le)
+            return Jc[le- -19444]
+        end
+        K=Hd(8781)
+        repeat
+            while true do
+                if K==-1000537081+1000550871 then
+                    K=Hd(-38216);
+                    break;
+                elseif K==-721632856- -721637371 then
+                    sb[Ad('\30\191\226\"\188\240','Q\217\132')]=Tb[Ad('\16_\163\50U\178t','F:\192')][Ad('+ 2','E')](de,de)
+                    de=(de+-1943189.9739999999/-1943189974)%(4.7012416853722021e-09*212709762);
+                    Tb[Ad('\20V\19\\','\96\55')][Ad('.\"0\55','YC')](-25058261.219999999/-1252913061)
+                    K=Hd(-4134)
+                elseif K==-114447171- -114478247 then
+                    de=779968774+-779968774
+                    K=-2138645070- -2138671217
+                elseif K==-7.1280559768005123e-05*-366818107 then
+                    if Nb and Nb[Ad('\29B\180(M\178','M#\198')]then
+                        K=6.2985808037732937e-06*716828146
+                    else
+                        K=Hd(-317)
+                    end
+                end
+            end
+        until K==-721297933- -721269068
+    end)
+    return sb
+end
+local Qa=af(Ad('Q\r\20)Z\30\28*y','\28l}G'),Tb[Ad('\25\146%\187~','L\214')][Ad('\156\151\133','\242')](-0/-1876789931,of[Ad('\1C\18^\30','V\n')]*wc,-893832953+893832953,of[Ad('\v7\133\4:\152','Cr\204')]*wc),Tb[Ad('\28\31 6{','I[')][Ad('7<.','Y')](477505355+-477505355,1344745593-1344745593,595776574+-595776574,-932601826- -932601826),wd,db[Ad(',9\218\155\219<7\204\158\216','nx\153\208\156')])
+local function ja()
+    local xb,F,hb
+    F,hb={[-10183]=19111,[-10074]=-6365},function(se)
+        return F[se+-32589]
+    end
+    xb=hb(22515)
+    repeat
+        while true do
+            if xb==1.8678709743987373e-05*-340762295 then
+                Qa[Ad('\151\250\173q8\164\196\161p9\162','\214\148\206\25W')]=Tb[Ad('\140\169N\174\163_\232','\218\204-')][Ad('*!3','D')](863685152-863685152,0/738082438)
+                Qa[Ad('* 8P\14&$W','zOK9')]=Tb[Ad('\128h\188A\231','\213,')][Ad('YR@','7')](-0*-1140980361,(194334286-194334266)*wc,49972919.350000001/999458387,-0*-1828354825)
+                xb=hb(22406)
+                break
+            end
+        end
+    until xb==314626471+-314607360
+end;
+ja()
+local Bb,Q=xa(Qa),af(Ad('\172\26\245n\t\150\57\230k\1\129','\228\127\148\nl'),Tb[Ad('T\176h\153\51','\1\244')][Ad('\196\207\221','\170')](1541197778/1541197778,1253988866+-1253988866,-2023114763+2023114763,of[Ad('\14\0\187C\187\214\25\r\191N\185\204\18','FE\250\a\254\132')]*wc),Tb[Ad('m\212Q\253\n','8\144')][Ad('hcq','\6')](0/1886821570,474447884-474447884,-0/-1329025716,2048521202-2048521202),Qa,db[Ad('\150\b\135\154\b\148','\222M\198')])
+local ob,cc,s=xa(Q),pd(Ad('\245\143\53\5f\237\135#\fo','\161\230Ai\3'),Ad('>\246\155\6\193\232\18\248\142C\231\238\25','{\142\235c\175\155'),Tb[Ad('\217\159\229\182\190','\140\219')][Ad('ODV','!')](-7.6221373576836434e-10*-918377572,-0*-18482944,-1859605748/-1859605748,-1129559482+1129559482),Tb[Ad('\17\222-\247v','D\154')][Ad('\197\206\220','\171')](88579556.25/1771591125,423752052-423752052,587075975+-587075975,-0/-302962629),Q,db[Ad('\202\232\198\249','\158\173')],of[Ad('0\5\143W\n;\31\146A\n','dL\219\27O')],Ad('z\220T\215','8\179'),nil,true),af(Ad('\151\163\128\50\129G\192\170\163\128/\156a\221','\196\215\225F\242\4\175'),Tb[Ad('R\234n\195\53','\a\174')][Ad('\23\28\14','y')](-9.275289363984875e-10*-970320132,0/1320707026,121797586.90000001/221450158,-0*-873574928),Tb[Ad('PolF7','\5+')][Ad('\163\168\186','\205')](1.6988781033724855e-10*294311875,0/1601247713,-225366085.65000001/-1502440571,1540817318+-1540817318),Qa,db[Ad('t\147\209\31i\146\211\2~',"\'\214\146P")])
+local yb=xa(s)
+yb[Ad('^w\217\53xq\194:','\f\24\173T')]=262643268150/1945505690
+local Vd,_d=pd(Ad('Hu\239\20\144Sd\239\4\134i','\27\1\142\96\227'),Ad('\131\185\30\137\29\163\185\22\158\a','\208\205\127\253t'),Tb[Ad('D\232x\193#','\17\172')][Ad('2\57+','\\')](936382690.80000007/1040425212,1512814+-1512814,-1907706259+1907706259,(-1.612737590719379e-08*-1860191030)*wc),Tb[Ad('\255\213\195\252\152','\170\145')][Ad('ibp','\a')](46288502.550000004/925770051,-462080239+462080239,-28254128.140000001/-1412706407,1278160968+-1278160968),s,db[Ad('\252\226\240\243','\168\167')],of[Ad('\31\195\194|\n\179k\165\18\222\215g\28\168n\180','W\134\131\56O\225\52\241')],Ad('\236\149\194\158','\174\250'),nil,true),{{[Ad('rFqB',"\28\'")]=Ad('c\219Y\219C','/\190'),[Ad('\230s\252g\245','\144\18')]=na[Ad('\201\242\159\182\244\249\252\254\137\130\244\232','\142\151\235\247\128\141')](na,Ad('\191.\133.\159','\243K'))},{[Ad('P\154S\158','>\251')]=Ad('-\17\135\181\239\3\56\171\242\206','bU\202\149\171'),[Ad('\166?\188+\181','\208^')]=Zb[Ad('\245oG\153\194\219Fk\161\227','\186+\n\198\134')]},{[Ad('[\181X\177','5\212')]=Ad('\2\227\198\1\30\215\238D)','M\167\139!'),[Ad('T\196N\208G','\"\165')]=Zb[Ad('\184\255\200\179\164\203\224\137\147','\247\187\133\236')]},{[Ad('\197\232\198\236','\171\137')]=Ad('\153\148\138\160\136\153\142\130\186\203\191','\218\230\227\212\168'),[Ad('\179\200\169\220\160','\197\169')]=Zb[Ad('\142\205K\21\96\142\215C\15\\\168','\205\191\"a?')]}}
+for ed,Fd in Tb[Ad('\220\16\243\220\18\225','\181\96\146')](_d)do
+    local _c,Zd,ud,C,H
+    Zd,ud={[9349]=-10651,[23751]=-18372},function(Xc)
+        return Zd[Xc+16720]
+    end
+    C=ud(7031)
+    repeat
+        while true do
+            if C==-155236082- -155217710 then
+                H=af(Ad("\0\129\253\'\167\243$",'S\245\156')..ed,Tb[Ad('bv^_\5','7\50')][Ad('\21\30\f','{')](1060001076.6/1177778974,-0*-1819684086,-424871128- -424871128,of[Ad('\4\252\239\135\253\31\237\231\148\234\3','W\168\174\211\162')]*wc),Tb[Ad('Q\232m\193\54','\4\172')][Ad('RYK','<')](-3.4880025196883741e-11*-1433485203,-0*-755272614,158297208.12/879428934+(ed-(-1484259810- -1484259811))*(-363934724.60000002/-1819673623),-0/-1001009505),s,db[Ad('\195ig\166\194\211gq\163\193','\129($\237\133')])
+                _c=Tb[Ad('\17\181=%9\181-4','X\219NQ')][Ad('\133\142\156','\235')](Ad('\155}\212\194\240\158q\215\192\249','\210\16\181\165\149'),H)
+                _c[Ad('\255O\220K','\177.')],_c[Ad('\26\138\136\190\3)\180\132\191\2/','[\228\235\214l')],_c[Ad('G\139\22\234{\164y\131=V\27w\139\27\242l\183d\147=Q6','\5\234u\129\28\214\22\246S2O')]=Ad('L\243d\232','\v\159'),Tb[Ad('%x\222\ar\207A','s\29\189')][Ad('\153\146\128','\247')](2073611.5+-2073611,-1176227360.5- -1176227361),1068029238-1068029237
+                _c[Ad('\245\197\167\226\209\195\187\229','\165\170\212\139')]=Tb[Ad('\n\167\54\142m','_\227')][Ad('\247\252\238','\153')](703563231.5-703563231,1874644397+-1874644397,4.6607784970099545e-10*1072782155,1051208759-1051208759)
+                _c[Ad('\229;\204\55','\182R')]=Tb[Ad('\170\132\150\173\205','\255\192')][Ad('\156\151\133','\242')](2051408848/2051408848,(1.0227495657622677e-08*977756465)*wc,-1920961945/-1920961945,(-1.7358208553446122e-08*-576096316)*wc)
+                _c[Ad('\4kv:G\96','^\"\24')]=-(-1438855899- -1438855900)
+                _c[Ad('\t\207!\197%','@\162')],_c[Ad('v\24]\194+|\26P\202<\f','?u<\165N')],_c[Ad('\205\r\206,;d?\r\234\19\223*,U#\15\253','\132\96\175K^0Ml')]=Ad('\194]f\f\206\206$\172\184\31\6\159\16(]\140\137s\238\224B\5\131','\176?\30m\189\189A\216\209{<'),db[Ad('&\243\162\"\254\181','g\176\225')],-1.5292513516364533e-09*-555827529
+                _c[Ad('>\15\136\202\b8\144\214\b','ml\233\166')],_c[Ad('\137\228\4#\17\153\237\3\52\17\168','\218\136m@t')]=Tb[Ad('\137O\185L','\204!')][Ad('-\203m\174\27\252u\178\27','~\168\f\194')][Ad('\157g\167h\171','\206\v')],Tb[Ad('y\203H\218','+\174')][Ad('\189\182\164','\211')](1731828330+-1731828281,80651159715/1645942035,-653269373550/-1451709719,693360562950/1540801251);
+                pd(Ad('\196\158S\201\217\139_\216','\151\234\50\189')..ed,Fd[Ad('\187\238\184\234','\213\143')],Tb[Ad("@3|\26\'",'\21w')][Ad('V]O','8')](7.8694761653155384e-10*762439567,0/326723826,9.7030936781103858e-10*1030599140,-1414391103+1414391103),Tb[Ad('\233\200\213\225\142','\188\140')][Ad('9\50 ','W')](40889043.850000001/817780877,-0*-1209973760,-0*-219266352,0*841945819),H,db[Ad('\255#\243\50','\171f')],of[Ad('\150\172\147z\t\96\52\157\172\141}\31n4','\197\248\210.V4q')],nil,nil,false);
+                pd(Ad('R\14\209\172W\27\220\173d','\1z\176\216')..ed,Fd[Ad('\229{\255o\246','\147\26')],Tb[Ad('\210\236\238\197\181','\135\168')][Ad('ryk','\28')](-616302898.19999993/-2054342994,0*857123016,1196457324+-1196457323,1941331450-1941331450),Tb[Ad('\148G\168n\243','\193\3')][Ad('\212\223\205','\186')](767602104.5/1096574435,-0/-1250083619,80653833-80653833,-1291367775+1291367775),H,db[Ad("S\'XW*O",'\18d\27')],of[Ad('\v\148\187s\182\137\139\0\148\165t\160\135\139',"X\192\250\'\233\221\206")],Ad('\205;\227\48','\143T'),Tb[Ad('\175H\159K','\234&')][Ad('\186\221\239\163\129\161\242\135\223\249\186\188\142\234','\238\184\151\215\217\224\158')][Ad('\232\202\194\219','\164\175')],true)
+                C=ud(-7371)
+                break
+            end
+        end
+    until C==-763060147+763049496
+end
+local nc=af(Ad('\200\152\160X\161A\127\244\130\181M\189\\Y\233','\155\236\193,\212\50<'),Tb[Ad('\162\222\158\247\197','\247\154')][Ad('\239\228\246','\129')](3.6714875787027728e-09*245132247,990722103+-990722103,-197696928/-988484640,-294986425- -294986425),Tb[Ad('RhnA5','\a,')][Ad('yr\96','\23')](2.9225801361609629e-11*1710817075,-0/-1389817221,1488750558.75/1985000745,0/1387539098),Qa,db[Ad(')3\150\160\52\50\148\189#','zv\213\239')])
+local Yd=xa(nc)
+Yd[Ad('o\136\236\228I\142\247\235','=\231\152\133')]=1784232689+-1784232599
+local D,ef,Cb=pd(Ad('V!\214cs\211M0\214sc\210','\5U\183\23\6\160'),Ad('\222t\238\210\217\96\232\208','\159\1\154\189'),Tb[Ad('B\164~\141%','\23\224')][Ad('&-?','H')](1849116624.3/2054574027,-1268784873+1268784873,0*716637941,(1095400866-1095400846)*wc),Tb[Ad('\135\15\187&\224','\210K')][Ad('t\127m','\26')](-2.3894879619293015e-10*-209249851,569524731-569524731,192129264.70000002/1921292647,664315325-664315325),nc,db[Ad('W\169[\184','\3\236')],of[Ad('\135qw\135?\148|\127\138lb\156)\143yn','\207\52\54\195z\198#+')],Ad('\248\159\214\148','\186\240'),nil,true),pd(Ad('\201\135\224\139\153\233\167\228\135\152','\154\243\129\255\236'),Ad('\22Q\175+R<\127\5\135;K*',"E%\206_\'O"),Tb[Ad('\149\231\169\206\242','\192\163')][Ad('hcq','\6')](239303061/265892290,530576512+-530576512,41859795-41859795,(-543907854- -543907874)*wc),Tb[Ad('A\194}\235&','\20\134')][Ad('QZH','?')](-99581002.900000006/-1991620058,-0*-1927978174,-67766590.5/-135533181,0/1253160673),nc,db[Ad('+\214L;\198\\+','x\131\15')],of[Ad('A\195\247\255\138&\158RW\207\226\244\140<\155C','\18\151\182\171\223u\193\6')],nil,nil,true),af(Ad('>\241\218\29y\15\248\199\6W\0','y\157\181j6'),Tb[Ad('\23\151+\190p','B\211')][Ad('\139\128\146','\229')](-329871701.69999999/-366524113,824996370+-824996370,7.7186477691367824e-10*1166007346,0*2083006189),Tb[Ad('\219&\231\15\188','\142b')][Ad('\208\219\201','\190')](-55695339.150000006/-1113906783,-392370011- -392370011,-3.0069266359214434e-10*-166282740,-0*-1427777214),Qa,Tb[Ad('\207r\254\227o\161','\140\29\146')][Ad('\244\255\237','\154')](-1087046486/-1087046486,-988209300+988209301,-276027739+276027740))
+Cb[Ad('Pz\15\235\196,\177e\250aq\96z\2\243\211?\172u\250f\\','\18\27l\128\163^\222\16\148\5%')],Cb[Ad('\213G\240\235k\230','\143\14\158')]=8.6942710859667332e-10*1092673544,-422411095+422411097
+local Na=xa(Cb)
+Na[Ad('EQ\127\17cWd\30','\23>\vp')]=2.5767658508306179e-08*1164250139
+Na[Ad('\fv\149X\148\181\57v\145X\132\188','X\4\244\54\231\197')]=Tb[Ad('+rt\212k\re\0vl\211\96\28S','e\a\25\182\14\127\54')][Ad('/$6','A')]({Tb[Ad('w\29\143=~\236ch\14$\16W\v\135\20~\231@b\22?\1','9h\226_\27\158\48\r\127Qu')][Ad('\158\149\135','\240')](0/1513046561,-1979307170.1199999/-2019701194),Tb[Ad('\218L\v3\96\143\96\140M\171\0\250Z\3\26\96\132C\134U\176\17','\148\57fQ\5\253\51\233<\222e')][Ad('\153\146\128','\247')](-7.7132581593228211e-10*-648234494,-7.1289381457325343e-10*-1290514774),Tb[Ad('\232\228[\130\152\174\31b\235\247C\200\242S\171\152\165<h\243\236R','\166\145\54\224\253\220L\a\154\130&')][Ad('LGU','\"')](-1788742775+1788742776,-4.5674119611198946e-10*-2145635227)})
+local Td=Tb[Ad('r\134\177AZ\134\161P',';\232\194\53')][Ad('\18\25\v','|')](Ad('\96\220\178l6A\205\190w\26','4\185\202\24t'),Q)
+Td[Ad("\237\'\206#",'\163F')]=Ad('\251\247e\30\172\250\238~\25\166\214','\184\155\nm\201')
+Td[Ad('P]yQ','\3\52')]=Tb[Ad('nUR|\t',';\17')][Ad('lgu','\2')](-898850538+898850538,of[Ad('\250\166\164\147\230\25Tv\237\190\164\142\252\21_y\252','\185\234\235\192\163F\22#')]*wc,0*459077920,of[Ad('Z(\206{\136\17%\170M0\206f\146\29.\165\\','\25d\129(\205Ng\255')]*wc)
+Td[Ad('\216\n\176/\252\f\172(','\136e\195F')]=Tb[Ad('\136\255\180\214\239','\221\187')][Ad('\154\145\131','\244')](410823457.75/432445745,-175696963- -175696963,2005424815.5+-2005424815,0/1068166021)
+Td[Ad('\147*\192\234e\160\20\204\235d\166','\210D\163\130\n')]=Tb[Ad(';\214\n\25\220\27_','m\179i')][Ad('QZH','?')](-3.3356049781678782e-10*-1498978456,1980419209.5+-1980419209)
+Td[Ad(':K\29\131\167*\200c\28E\21\nK\16\155\176\57\213s\28B8','x*~\232\192X\167\22r!A')]=-2.6131073249142899e-09*-382686157
+Td[Ad('F\230j\247','\18\131')],Td[Ad('\127\165[ofD\172Li\22','+\192#\27%')],Td[Ad('x\31P\4','>p')],Td[Ad("\196\'^\251\195+\\\234",'\144B&\143')]=Ad('\134','\222'),db[Ad('\131\144\143\129','\215\213')],Tb[Ad('s\202C\201','6\164')][Ad('6\31\30\4','pp')][Ad('\175\26\155\1\162\133\55\128\5\167','\232u\239i\195')],(-9.5458715532374885e-09*-1885631909)*wc
+local gd,Bd,Wc;
+Q[Ad('m\244\142%\157f\255\153\49\135','$\154\254P\233')][Ad('>\b\154\19\2\151\t','}g\244')](Q[Ad('m\244\142%\157f\255\153\49\135','$\154\254P\233')],function(S)
+    local Rd,Ce,Wd
+    Wd,Ce={[-6619]=169,[-19799]=169,[-11626]=8549,[23136]=-20712,[-29696]=169,[22021]=-10353,[14715]=-27274},function(ad)
+        return Wd[ad- -17824]
+    end
+    Rd=Ce(-3109)
+    repeat
+        while true do
+            if Rd==2.1310777905119133e-07*793025955 then
+                Rd=Ce(-29450);
+                break;
+            elseif Rd==-1371229388- -1371208676 then
+                Rd=Ce(-47520);
+            elseif Rd==-390504355+390477081 then
+                if not(S[Ad(Ad('=\165\234$\96\140\24\163\251\2P\146\r','\249\211\51I,U'),Ad('ntW\224t\\','\255q\235'))]==Tb[Ad(Ad('Burv','\n*'),Ad('\127C','r'))][Ad(Ad('\243\180f\15B\175\214\178w)r\177\195','SI\229\194~v'),Ad('t\96\28>\155M','\129\238\250'))][Ad(Ad("\'\148\165\227\'h\31\143\164\255,\27",'-\192D\169\167a'),Ad('\144X_\238\134\128','\215c\203'))]or S[Ad(Ad('\f\\\16\5\209-)Z\1#\225\51<','4m\142\236\144\140'),Ad('S\146\193\165\216\245','>\208:'))]==Tb[Ad(Ad('\138\15\186\f','\218!'),Ad('\29H','\b'))][Ad(Ad('\129\a\249l\170\244\164\1\232J\154\234\177','\163\164H\b\190w'),Ad(')\bXH\133a','^\216\140'))][Ad(Ad('!i\0e\29','\244\166'),Ad('\242\211','s'))])then
+                    Rd=Ce(5312)
+                    break
+                else
+                    Rd=Ce(4197)
+                    break
+                end
+                Rd=Ce(-24443)
+            elseif Rd==9620394584787/-929237379 then
+                gd=true
+                Bd=S[Ad('\181.GO\145([H','\229A4&')]
+                Wc=Qa[Ad('\141G\16\145\169A\f\150','\221(c\248')];
+                ce[Ad('\16\210\255\50\212\255','S\160\154')](ce,Q,Tb[Ad('q\2_\173K<T\174J','%u:\200')][Ad('~ug','\16')](-193645031.70000002/-1936450317),{[Ad('(\157\216\192\200q\206\164\4\152\248\196\195l\211\226','j\252\187\171\175\3\161\209')]=db[Ad('N\211\18J\222\5','\15\144Q')]})[Ad('\191^\142K','\239\50')](ce[Ad('\16\210\255\50\212\255','S\160\154')](ce,Q,Tb[Ad('q\2_\173K<T\174J','%u:\200')][Ad('~ug','\16')](-193645031.70000002/-1936450317),{[Ad('(\157\216\192\200q\206\164\4\152\248\196\195l\211\226','j\252\187\171\175\3\161\209')]=db[Ad('N\211\18J\222\5','\15\144Q')]}))
+                Rd=Ce(-37623)
+            end
+        end
+    until Rd==1858468646-1858460097
+end);
+Ba[Ad('*\181\164;|\190\v\186\186)m\153','c\219\212N\b\253')][Ad('$\181\238\t\191\227\19','g\218\128')](Ba[Ad('*\181\164;|\190\v\186\186)m\153','c\219\212N\b\253')],function(jf)
+    local g,u,P,Ca
+    u,Ca={[10908]=8748,[-31060]=4590,[-19283]=8748,[-20179]=18008,[31924]=23449,[6124]=-7698},function(pa)
+        return u[pa- -29462]
+    end
+    P=Ca(-23338)
+    repeat
+        while true do
+            if P==1755000402+-1754991654 then
+                P=Ca(-60522);
+                break;
+            elseif P==1924046871+-1924054569 then
+                if not(gd and(jf[Ad(Ad('\19leV;\201\54jtp\v\215#','\166b\230N\231^'),Ad('U\224\195\223\b\220','\181\157%'))]==Tb[Ad(Ad('\203\183\251\180','\136\242'),Ad('\244\217','\242'))][Ad(Ad('+(\240\250\241\221\14.\225\220\193\195\27','\162]<i\161\173'),Ad('\205S\17\240L\166','\17U\184'))][Ad(Ad('\204(\233\173\187\189\238\49\249\179\187\158\245','\137\186\234xo\135'),Ad('\154\201J4\133K','\146\52<'))]or jf[Ad(Ad('\189\196\168\176:I\152\194\185\150\nW\141','\211\220\241lc\242'),Ad('\236\192Ny\187\167','\215\171r'))]==Tb[Ad(Ad('\249\161\201\162','>\159'),Ad('\6\212','\132'))][Ad(Ad("\202+\226\'u\130\239-\243\1E\156\250",'{B\t\153 K'),Ad('\29sY5up','\249i\215'))][Ad(Ad('yJXFE','*<'),Ad('\208\206','\215'))]))then
+                    P=Ca(2462)
+                    break
+                else
+                    P=Ca(-49641)
+                    break
+                end
+                P=1.4153551557261013e-05*618078082
+            elseif P==-19865862704948/-847194452 then
+                P=Ca(-48745);
+            elseif P==1554005312+-1553987304 then
+                g=jf[Ad('\178\137\175T\150\143\179S','\226\230\220=')]-Bd
+                Qa[Ad('\127\172\23\48[\170\v7','/\195dY')]=Tb[Ad('j\142V\167\r','?\202')][Ad('.%7','@')](Wc[Ad('\132','\220')][Ad('\145\197\163\202\167','\194\166')],Wc[Ad('\220','\132')][Ad('\211\226\234\239\225\248','\156\132\140')]+g[Ad('\134','\222')],Wc[Ad('6','o')][Ad('\202\26\248\21\252','\153y')],Wc[Ad('\20','M')][Ad('\228\200\25\216\203\v','\171\174\127')]+g[Ad('Z','\3')])
+                P=Ca(-18554)
+            end
+        end
+    until P==-974070356- -974074946
+end);
+Q[Ad('L\17\250\182;@\17\238\166+','\5\127\138\195O')][Ad('l/\169A%\164[','/@\199')](Q[Ad('L\17\250\182;@\17\238\166+','\5\127\138\195O')],function(Kb)
+    local ba,vc,pe
+    pe,vc={[14622]=-13748,[-10566]=-3811,[15048]=-9949,[17973]=-13748,[30991]=29766},function(a)
+        return pe[a- -202]
+    end
+    ba=vc(30789)
+    repeat
+        while true do
+            if ba==-601882850+601872901 then
+                gd=false;
+                ce[Ad('\171*h\137,h','\232X\r')](ce,Q,Tb[Ad('U\159\250\232o\161\241\235n','\1\232\159\141')][Ad('\216\211\193','\182')](-90862499/-908624990),{[Ad('\130C\131sJ\139!\235\174F\163wA\150<\173','\192\"\224\24-\249N\158')]=db[Ad('\170:)\166::','\226\127h')]})[Ad('\96\167Q\178','0\203')](ce[Ad('\171*h\137,h','\232X\r')](ce,Q,Tb[Ad('U\159\250\232o\161\241\235n','\1\232\159\141')][Ad('\216\211\193','\182')](-90862499/-908624990),{[Ad('\130C\131sJ\139!\235\174F\163wA\150<\173','\192\"\224\24-\249N\158')]=db[Ad('\170:)\166::','\226\127h')]}))
+                ba=vc(17771)
+            elseif ba==78325638+-78339386 then
+                ba=vc(-10768);
+                break;
+            elseif ba==43430775460842/1459073287 then
+                if Kb[Ad("i\236\203\56\131\'L\234\218\30\179\57Y",'<\159\174J\202I')]==Tb[Ad('\19U#V','V;')][Ad('\129p\226b\30\144\164v\243D.\142\177','\212\3\135\16W\254')][Ad('\197%\140\1\142\195\253>\141\29\133\176','\136J\249r\235\129')]or Kb[Ad('\243\241\169\219\b+\214\247\184\253\56\53\195','\166\130\204\169AE')]==Tb[Ad('m\252]\255','(\146')][Ad('\139\162\24\221ET\174\164\t\251uJ\187','\222\209}\175\f:')][Ad('&\198\a\202\26','r\169')]then
+                    ba=vc(14846)
+                    break
+                end
+                ba=vc(14420)
+            end
+        end
+    until ba==-1190223597+1190219786
+end)
+local function La(hf)
+    local xe,Ld,Va,X,He,Xb,kc,kf,Dd,Wb,rb,gc,Ya,w,He,tc,vd,Hc,J,Fe,Kd,Ye,Hc
+    w,Ya={[27419]=-1294,[4652]=23275,[-4147]=-5187,[10346]=-18704,[-9673]=29584,[-26614]=-4272,[-14703]=29584,[32336]=-1497,[-30780]=29584,[-14165]=18097,[-31886]=4121,[17305]=-12513,[-7979]=16485,[27005]=19869,[-4929]=16485,[-7496]=15112,[-22250]=31101,[-11167]=16485,[-8175]=15554,[771]=-3687,[5800]=-27106,[278]=24386,[13408]=14923,[12719]=-6886,[-3871]=-28077,[9776]=28559,[-4137]=8614,[-26204]=23275,[29467]=-17386,[12034]=-5034,[-14178]=-5034,[25469]=-28077,[21628]=20660,[-15058]=30738,[11108]=-24510,[-25465]=-5034,[-10976]=8529,[-29264]=15112,[-12801]=-5649},function(Fb)
+        return w[Fb+22638]
+    end
+    kc=Ya(-35439)
+    repeat
+        while true do
+            if kc==-2.8592058494606718e-05*654167660 then
+                if(Xb>=0 and J>X)or((Xb<0 or Xb~=Xb)and J<X)then
+                    kc=Ya(-53418)
+                else
+                    kc=Ya(-26775)
+                end
+            elseif kc==111379716-111391128 then
+                if Hc[Ad('\176\138\184','\249')](Hc,Ad('\143\240\171\218\168\215\141\199','\218\185\232\181'))then
+                    kc=Ya(-12862)
+                    break
+                end
+                kc=-725440772+725456326
+            elseif kc==1535325316+-1535330965 then
+                hf=Tb[Ad(">6\'?",'SW')][Ad('1\23\51\22\"','R{')](hf,-2091489937.5- -2091489938,-6.906795669125547e-09*-289569881)
+                if not(hf==wc)then
+                    kc=Ya(-49252)
+                    break
+                else
+                    kc=Ya(-9230)
+                    break
+                end
+                kc=Ya(-10604)
+            elseif kc==5155792816634/598536431 then
+                Dd=s[Ad('G\185\195\187\216\186xr\164\238\183\247\191n','\1\208\173\223\158\211\n')](s,Ad('\172\196\157\139\226\147\136','\255\176\252')..Kd)
+                if not(Dd)then
+                    kc=Ya(-33614)
+                    break
+                else
+                    kc=Ya(-54524)
+                    break
+                end
+                kc=Ya(-27567)
+            elseif kc==-23455345535314/-1507994441 then
+                if Hc[Ad('|Ft','5')](Hc,Ad('8\202%\224O=\198&\226F','q\167D\135*'))and Hc[Ad('\1\194\"\198','O\163')]==Ad('\127\203\26H\204\f',',\163{')then
+                    kc=Ya(9698)
+                    break
+                end
+                kc=1.9714086564388071e-05*1047981601
+            elseif kc==-4.1940925376036157e-06*1018575523 then
+                kc=Ya(-48103);
+            elseif kc==2077101579416/-1605178964 then
+                ce[Ad('\216\52\141\250\50\141','\155F\232')](ce,Fe,Lc,{[Ad('\144\222\185\210','\195\183')]=Tb[Ad('\172\27\144\50\203','\249_')][Ad('\a\f\30','i')](946335639-946335638,(-4.8623578118878128e-09*-2056615409)*wc,509455241+-509455240,(-1104697304+1104697314)*wc)})[Ad('\1D0Q','Q(')](ce[Ad('\216\52\141\250\50\141','\155F\232')](ce,Fe,Lc,{[Ad('\144\222\185\210','\195\183')]=Tb[Ad('\172\27\144\50\203','\249_')][Ad('\a\f\30','i')](946335639-946335638,(-4.8623578118878128e-09*-2056615409)*wc,509455241+-509455240,(-1104697304+1104697314)*wc)}))
+                kc=Ya(-21867)
+            elseif kc==0.00035285997003957852*-49271670 then
+                Wb=Dd[Ad('|\165gOl\193\151I\184JCC\196\129',':\204\t+*\168\229')](Dd,Ad('\211\160\168\175\214\181\165\174\229','\128\212\201\219')..Kd)
+                if Wb then
+                    kc=Ya(-26785)
+                    break
+                end
+                kc=Ya(-26509)
+            elseif kc==-1.5059894269547373e-05*-2041050186 then
+                Ld=Ra(kf)
+                if Ld~=nil and Ld.__iter~=nil then
+                    kc=Ya(4367)
+                    break
+                elseif Sd(kf)==Ad('\219\160\205\173\202','\175\193')then
+                    kc=Ya(-5333)
+                    break
+                end
+                kc=198973302+-198950027
+            elseif kc==96298127+-96289598 then
+                kc=Ya(-30617);
+            elseif kc==-26260382514975/-1128265629 then
+                kc=Ya(-51902)
+            elseif kc==8.6206327928655172e-05*-314431674 then
+                J=J+Xb;
+                Kd=J;
+                if J~=J then
+                    kc=Ya(-32311)
+                else
+                    kc=Ya(-12292)
+                end
+            elseif kc==-2282480781717/1524703261 then
+                ce[Ad('\153\55\197\187\49\197','\218E\160')](ce,Hc,Lc,{[Ad('\167y\142u','\244\16')]=Tb[Ad('\n\25\54\48m','_]')][Ad('\173\166\180','\195')](1535185409+-1535185408,(868436358-868436334)*wc,-4.8187199715140403e-10*-2075239910,(1033501065-1033501041)*wc)})[Ad('%\229\20\240','u\137')](ce[Ad('\153\55\197\187\49\197','\218E\160')](ce,Hc,Lc,{[Ad('\167y\142u','\244\16')]=Tb[Ad('\n\25\54\48m','_]')][Ad('\173\166\180','\195')](1535185409+-1535185408,(868436358-868436334)*wc,-4.8187199715140403e-10*-2075239910,(1033501065-1033501041)*wc)}))
+                kc=Ya(-1010)
+            elseif kc==-1018046968+1018071354 then
+                ja()
+                kc=Ya(-36803)
+                break
+            elseif kc==-418301782+418332883 then
+                He,Hc=kf(rb,vd);
+                vd=He;
+                if vd==nil then
+                    kc=Ya(-22360)
+                else
+                    kc=-1795210940+1795199528
+                end
+            elseif kc==1187321313-1187306201 then
+                kc=-1.8772467544482404e-05*-1656734786;
+            elseif kc==225339670+-225335549 then
+                ce[Ad('D\222\202f\216\202','\a\172\175')](ce,Dd,Lc,{[Ad('\146\172\196\223\182\170\216\216','\194\195\183\182')]=Tb[Ad('\167\241\155\216\192','\242\181')][Ad('8\51!','V')](-1.6955345381690987e-10*-294892253,0/228842213,257169992.39999998/1714466616+(Kd- -1258614875/-1258614875)*(-257106657.75999999/-1606916611)*wc,-527955180+527955180)})[Ad('O\135~\146','\31\235')](ce[Ad('D\222\202f\216\202','\a\172\175')](ce,Dd,Lc,{[Ad('\146\172\196\223\182\170\216\216','\194\195\183\182')]=Tb[Ad('\167\241\155\216\192','\242\181')][Ad('8\51!','V')](-1.6955345381690987e-10*-294892253,0/228842213,257169992.39999998/1714466616+(Kd- -1258614875/-1258614875)*(-257106657.75999999/-1606916611)*wc,-527955180+527955180)}));
+                ce[Ad('\204\1\224\238\a\224','\143s\133')](ce,Dd,Lc,{[Ad('\19\204:\192','@\165')]=Tb[Ad('\136#\180\n\239','\221g')][Ad('\253\246\228','\147')](-3.6945286383049938e-09*-243603471,-0/-2069448735,589009476-589009476,of[Ad('\20\206^\19\27\15\223V\0\f\19','G\154\31GD')]*wc)})[Ad('}\160L\181','-\204')](ce[Ad('\204\1\224\238\a\224','\143s\133')](ce,Dd,Lc,{[Ad('\19\204:\192','@\165')]=Tb[Ad('\136#\180\n\239','\221g')][Ad('\253\246\228','\147')](-3.6945286383049938e-09*-243603471,-0/-2069448735,589009476-589009476,of[Ad('\20\206^\19\27\15\223V\0\f\19','G\154\31GD')]*wc)}))
+                Fe=Dd[Ad('\24us5X\219\159-h^9w\222\137','^\28\29Q\30\178\237')](Dd,Ad('=\163\21\184','z\207'))
+                if Fe then
+                    kc=Ya(4781)
+                    break
+                end
+                kc=-6.3331053569996479e-06*582178851
+            elseif kc==1307852509-1307837586 then
+                return
+            elseif kc==-279307539- -279324024 then
+                kc=Ya(-16838)
+            elseif kc==1167789104-1167801617 then
+                kf,rb,vd=Z(kf)
+                kc=Ya(-17986)
+            elseif kc==-5252273670720/1424538560 then
+                gc=Dd[Ad('9;.\20\28x\242\f&\3\24\51}\228','\127R@pZ\17\128')](Dd,Ad('\194\217hh\223\204dy','\145\173\t\28')..Kd)
+                if gc then
+                    kc=Ya(-9919)
+                    break
+                end
+                kc=6.4543453352811707e-05*-269368915
+            elseif kc==-768958593+768953406 then
+                Wb[Ad('K\173\t\2L\161\v\19','\31\200qv')]=of[Ad('\153\178\143}su\31\146\178\145ze{\31','\202\230\206),!Z')]*wc
+                xe=Tb[Ad('\204\30\213\23','\161\127')][Ad('\212\216\193','\185')](1459871004/1459871004,Tb[Ad('I\151P\158','$\246')][Ad('\214#\223 \194','\176O')](wc*(-1747514372.5- -1747514374)));
+                Xa(Wb,xe)
+                kc=Ya(2831)
+            elseif kc==462804826-462832903 then
+                kc=Ya(-33805)
+            elseif kc==1314067862-1314039303 then
+                Hc[Ad('\188hK\229\176\165\173f]\226\160\164','\255\a9\139\213\215')]=Tb[Ad('>0\2\25','kt')][Ad('\143\132\150','\225')](1932314934-1932314934,of[Ad('U\171\184\139\203\vI\182\171\129\199\fE','\22\228\234\197\142Y')]*wc)
+                kc=Ya(-30813)
+            elseif kc==42014486919759/2114574811 then
+                kf,rb,vd=Ld.__iter(kf)
+                kc=Ya(-48842)
+            elseif kc==-327731642- -327726608 then
+                Ye=hf/wc
+                wc=hf;
+                ce[Ad('\26\240\209\56\246\209','Y\130\180')](ce,Qa,Lc,{[Ad('\248\170\209\166','\171\195')]=Tb[Ad('\16\247,\222w','E\179')][Ad('^UG','0')](-0/-1417186335,of[Ad('^MMPA','\t\4')]*wc,-0*-678464668,of[Ad('>\252\23\49\241\n','v\185^')]*wc)})[Ad('\229\57\212,','\181U')](ce[Ad('\26\240\209\56\246\209','Y\130\180')](ce,Qa,Lc,{[Ad('\248\170\209\166','\171\195')]=Tb[Ad('\16\247,\222w','E\179')][Ad('^UG','0')](-0/-1417186335,of[Ad('^MMPA','\t\4')]*wc,-0*-678464668,of[Ad('>\252\23\49\241\n','v\185^')]*wc)}));
+                ce[Ad('\235\127_\201y_','\168\r:')](ce,Q,Lc,{[Ad('U\142|\130','\6\231')]=Tb[Ad("\141\'\177\14\234",'\216c')][Ad('fm\127','\b')](630151940+-630151939,0/499188593,-0/-894862499,of[Ad('\161XD\236\184)\182U@\225\186\51\189','\233\29\5\168\253{')]*wc)})[Ad('\19m\"x','C\1')](ce[Ad('\235\127_\201y_','\168\r:')](ce,Q,Lc,{[Ad('U\142|\130','\6\231')]=Tb[Ad("\141\'\177\14\234",'\216c')][Ad('fm\127','\b')](630151940+-630151939,0/499188593,-0/-894862499,of[Ad('\161XD\236\184)\182U@\225\186\51\189','\233\29\5\168\253{')]*wc)}))
+                cc[Ad('\228\151\"U\227\155 D','\176\242Z!')]=of[Ad('{\96xD&pzeR&','/),\bc')]*wc
+                Vd[Ad('d\30\209*c\18\211;','0{\169^')]=of[Ad('\177j\149\200\0\202\136\29\188w\128\211\22\209\141\f','\249/\212\140E\152\215I')]*wc
+                Vd[Ad('\169\134\128\138','\250\239')]=Tb[Ad('s\146O\187\20','&\214')][Ad('\248\243\225','\150')](7.3488456839835731e-10*1224682132,0*2093479451,-1754305733- -1754305733,(4418474640/147282488)*wc)
+                J,X,Xb=501468128+-501468127,#_d,1
+                kc=Ya(-11530)
+            elseif kc==23662912178740/1145349089 then
+                kc=Ya(-44888)
+            elseif kc==-1.1901452072811228e-05*2059412570 then
+                Kd=J;
+                if X~=X then
+                    kc=Ya(-37341)
+                else
+                    kc=934373532-934392236
+                end
+            elseif kc==1.3970243173318298e-05*2117643883 then
+                D[Ad(" \150\173)\'\154\175\56",'t\243\213]')]=of[Ad('Y\173\153\214\143\149\130\17T\176\140\205\153\142\135\0','\17\232\216\146\202\199\221E')]*wc
+                D[Ad('? \22,','lI')]=Tb[Ad('\2\192>\233e','W\132')][Ad('5>,','[')](6.2090083039615104e-10*1449506839,-0/-85241176,0*245431958,(-708728284- -708728304)*wc)
+                ef[Ad('X\130\t\200_\142\v\217','\f\231q\188')]=of[Ad("\193 n\240$\146\'p\215,{\251\"\136\"a",'\146t/\164q\193x$')]*wc
+                ef[Ad('~\96Wl','-\t')]=Tb[Ad('\191\152\131\177\216','\234\220')][Ad('v}o','\24')](-4.4203501765162964e-10*-2036037789,-2140036841- -2140036841,2137250465-2137250465,(1177660374+-1177660354)*wc)
+                Va=Tb[Ad('\0c\25j','m\2')][Ad('\240\252\229','\157')](-454232529- -454232530,Tb[Ad('\152@\129I','\245!')][Ad('Z\183S\180N','<\219')](wc*(-887698955.5- -887698957)));
+                Xa(cc,Va);
+                Xa(Vd,Va);
+                Xa(D,Va);
+                Xa(ef,Va)
+                Td[Ad('\198\55\239;','\149^')]=Tb[Ad('\nX6qm','_\28')][Ad('\206\197\215','\160')](0*1466335767,of[Ad('\255\227Aq[^\148C\232\251AlAR\159L\249','\188\175\14\"\30\1\214\22')]*wc,0/1216323919,of[Ad('{\233\239\231,\153\213\222l\241\239\250\54\149\222\209}','8\165\160\180i\198\151\139')]*wc)
+                Td[Ad('\222\163\243\219\217\175\241\202','\138\198\139\175')]=(-8.8477100210936196e-09*-2034424722)*wc
+                kf,rb,vd=Tb[Ad('\0;\25(\3','pZ')](Qa[Ad('\129\26\206\142#*\240\163\17\222\171(-\224','\198\127\186\202FY\147')](Qa))
+                if Sd(kf)~='function'then
+                    kc=Ya(-37696)
+                    break
+                end
+                kc=Ya(-30134)
+            elseif kc==7470392330324/-1084866734 then
+                gc[Ad('\168\189\203K\175\177\201Z','\252\216\179?')]=of[Ad('\6\19\150\158\157-\217\r\19\136\153\139#\217','UG\215\202\194y\156')]*wc
+                tc=Tb[Ad('\188\241\165\248','\209\144')][Ad('\161\173\180','\204')](8.0842482861205679e-10*1236973389,Tb[Ad('\149c\140j','\248\2')][Ad('\232\17\225\18\252','\142}')](wc*(7.8342004823567378e-10*1914681662)));
+                Xa(gc,tc)
+                kc=Ya(6829)
+            end
+        end
+    until kc==25394552109567/1403246511
+end
+local function aa()
+    local sf,Yb,Kc,xf,qf
+    Yb,xf={[-26901]=-29793,[32229]=23323,[-3413]=23323,[15989]=24046,[28690]=23323,[23978]=-26554,[20194]=4930,[-7911]=28464},function(Jd)
+        return Yb[Jd+-16676]
+    end
+    sf=xf(8765)
+    repeat
+        while true do
+            if sf==-1309992124+1310020588 then
+                qf,Kc=Tb[Ad('\nGB{\14XQs\24','}(0\16')][Ad('d\rj\27^\172S;y\4^\176F',"\'x\24i;\194")][Ad("F\165{\204\'\238b\184M\210-\228",'\16\204\30\187W\129')],-33268322+33268323
+                if qf[Ad('{','#')]>=-520320114+520322674 or qf[Ad('\171','\242')]>=-1440782434- -1440783874 then
+                    sf=xf(-10225)
+                    break
+                elseif qf[Ad('\171','\243')]<=526010856+-526009490 or qf[Ad('7','n')]<=765947268+-765946500 then
+                    sf=xf(36870)
+                    break
+                elseif qf[Ad('B','\26')]<=682998118+-682997094 or qf[Ad('\31','F')]<=185148277+-185147677 then
+                    sf=xf(40654)
+                    break
+                end;
+                sf=-1513254508+1513277831;
+            elseif sf==14062518064694/-529581911 then
+                Kc=2.4857406265750469e-09*321835670
+                sf=xf(48905)
+            elseif sf==1551353732+-1551330409 then
+                La(Kc)
+                sf=xf(32665)
+                break
+            elseif sf==-692156604+692161534 then
+                Kc=-4.5531524513769962e-10*-2086466487
+                sf=xf(45366)
+            elseif sf==-2.4723219007427858e-05*1205061525 then
+                Kc=-816452007.89999998/-480265887
+                sf=xf(13263)
+            end
+        end
+    until sf==404242599-404218553
+end;
+aa();
+Tb[Ad('g\146\237\31c\141\254\23u','\16\253\159t')][Ad('\249\247A\198\245J\206\193R\217\245V\219','\186\130\51\180\144$')][Ad('\151\55\243\213\136\154\203\154\212\208\207\240\184\51\233\226\159\145\232\150\193\202\215\223','\208R\135\133\250\245\187\255\166\164\182\179')](Tb[Ad('g\146\237\31c\141\254\23u','\16\253\159t')][Ad('\249\247A\198\245J\206\193R\217\245V\219','\186\130\51\180\144$')],Ad('5\208\192\205\150\16\17\205\246\211\156\26','c\185\165\186\230\127'))[Ad('3\197\164\30\207\169\4','p\170\202')](Tb[Ad('g\146\237\31c\141\254\23u','\16\253\159t')][Ad('\249\247A\198\245J\206\193R\217\245V\219','\186\130\51\180\144$')][Ad('\151\55\243\213\136\154\203\154\212\208\207\240\184\51\233\226\159\145\232\150\193\202\215\223','\208R\135\133\250\245\187\255\166\164\182\179')](Tb[Ad('g\146\237\31c\141\254\23u','\16\253\159t')][Ad('\249\247A\198\245J\206\193R\217\245V\219','\186\130\51\180\144$')],Ad('5\208\192\205\150\16\17\205\246\211\156\26','c\185\165\186\230\127')),function()
+    local gf,ic,qd
+    gf,ic={[-20704]=-32670,[-19700]=-6485},function(ka)
+        return gf[ka+10072]
+    end
+    qd=ic(-29772)
+    repeat
+        while true do
+            if qd==-1777929942- -1777923457 then
+                aa()
+                qd=ic(-30776)
+                break
+            end
+        end
+    until qd==1211110351+-1211143021
+end)
+local function Eb(h,Pa)
+    local vb=s[Ad('\21\241_\248\27\153\15 \236r\244\52\156\25','S\152\49\156]\240}')](s,Ad('\"j\5\5L\v\6','q\30d')..h)
+    if not(vb and vb[Ad(Ad('\157u\31\130\246o9\168h2\142\217j/','\180\243n\240\174\213!'),Ad('\b\191OqN\131\r','gPP'))](vb,Ad(Ad('\228\233s\249\225\252~\248\210','\191\250\vr'),Ad('0\r!\149','8j'))..h))then
+        local kd,jb,Lb
+        kd,Lb={[16231]=27991,[22463]=-2158},function(qc)
+            return kd[qc+27805]
+        end
+        jb=Lb(-5342)
+        repeat
+            while true do
+                if jb==2019409018+-2019411176 then
+                    jb=Lb(-11574);
+                    break;
+                end
+            end
+        until jb==819934767+-819906776
+    else
+        local Ed=vb[Ad('\218\24\"\21~\143w\239\5\15\25Q\138a','\156qLq8\230\5')](vb,Ad('\173\56\236\238\168-\225\239\155','\254L\141\154')..h)
+        local Je,dd,Xd=Tb[Ad('\139\245\\K\146\248WL','\255\154\50>')](Ed[Ad('1\232\29\249','e\141')])or 1637034011+-1637034011,Tb[Ad('gk*\5~f!\2','\19\4Dp')](Pa)or 1283911266+-1283911266,Ed[Ad('#\246\15\244\5','\96\154')](Ed)
+        Xd[Ad('V\249u\253','\24\152')]=Ad('t\227\1X\242U\219\29I\232','2\143x1\156')
+        Xd[Ad('\218\52z\239;|','\138U\b')]=vb
+        Xd[Ad('\21\rr\130\127[\137\22\50\24k\132NG\139\1','Ah\n\246+)\232x')]=-1055594817+1055594817
+        local jc,Ua=1.7379751951140025e-09*575382205,db[Ad('\210\155Z\194\139J\210','\129\206\25')]
+        if not(dd<Je)then
+            local Ne,j,td
+            td,Ne={[-19319]=-20168,[25013]=-25897},function(rd)
+                return td[rd- -21018]
+            end
+            j=Ne(3995)
+            repeat
+                while true do
+                    if j==-1425087745+1425061848 then
+                        j=Ne(-40337);
+                        break;
+                    end
+                end
+            until j==3.9954893128644728e-05*-504769214
+        else
+            local qe,be,U
+            U,be={[-27168]=15669,[959]=-28293},function(kb)
+                return U[kb-15084]
+            end
+            qe=be(16043)
+            repeat
+                while true do
+                    if qe==497921943+-497950236 then
+                        jc=-(-1672418794- -1672418795)
+                        Ua=db[Ad('\31)\b4\b','Z{')]
+                        qe=be(-12084)
+                        break
+                    end
+                end
+            until qe==1696985605-1696969936
+        end
+        Xd[Ad('\157\139\225[\145\221\2\243\190\221\182\187\143\247\\\178\200\2\249\187\219\155','\201\238\153/\194\169p\156\213\184\226')]=-1.851576494996283e-10*-1620240918
+        Xd[Ad('\225j\tP\253\182KR\222j2K\194\173K\14','\181\15q$\174\194\57=')]=Ua;
+        Tb[Ad('\20I\6N\t','g9')](function()
+            local y,md,Ob,ge,Nd,Ab,ia
+            ia,ge={[-22399]=-4495,[12298]=14229,[238]=2413,[8453]=-28071},function(N)
+                return ia[N+32638]
+            end
+            Ab=ge(-24185)
+            repeat
+                while true do
+                    if Ab==-24677496203360/900244280 then
+                        y=Nd;
+                        if md~=md then
+                            Ab=ge(-55037)
+                        else
+                            Ab=-10484895269137/-447747161
+                        end
+                    elseif Ab==-37927678- -37923183 then
+                        Xd[Ad('f\246\156V\225\128[','\"\147\239')](Xd)
+                        Ab=ge(-32400)
+                        break
+                    elseif Ab==890713984+-890742055 then
+                        Nd,Ob,md=-1481137435/-1481137435,1,-1416617978+1416617988
+                        Ab=-945991730- -945964318
+                    elseif Ab==8.482091489388971e-05*232749199 then
+                        Xd[Ad(')\f\232\24\r\n\244\31','yc\155q')]=Xd[Ad('\213\156\180\26\241\154\168\29','\133\243\199s')]+Tb[Ad('\198\132\250\173\161','\147\192')][Ad('\");','L')](0/142638945,-1283520243- -1283520243,-(7094806.75/141896135)*jc,-635460043+635460043)
+                        Xd[Ad('2\127\185]>*R\183\21j\160[\15\54P\160','f\26\193)jX3\217')]=Xd[Ad(')?\211\255\4\136\189\200\14*\202\249\53\148\191\223','}Z\171\139P\250\220\166')]+1.2035609454395363e-10*830867771
+                        Xd[Ad('\229P)\30$\"\132H\a\139\147\195T?\25\a7\132B\2\141\190',"\177\53QjwV\246\'l\238\199")]=Xd[Ad('\134\207Zpa\203#\2L\151\171\160\203LwB\222#\bI\145\134',"\210\170\"\4\50\191Qm\'\242\255")]+9.8057337890866569e-11*713868044;
+                        Tb[Ad('\198\204\216\217','\177\173')](-34837241.82/-1161241394)
+                        Ab=ge(-20340)
+                    elseif Ab==11285236920708/793115252 then
+                        Nd=Nd+Ob;
+                        y=Nd;
+                        if Nd~=Nd then
+                            Ab=1404242002+-1404246497
+                        else
+                            Ab=1609054510+-1609031093
+                        end
+                    elseif Ab==-7926484984337/-338492761 then
+                        if(Ob>=0 and Nd>md)or((Ob<0 or Ob~=Ob)and Nd<md)then
+                            Ab=1535158530+-1535163025
+                        else
+                            Ab=-680658130- -680677872
+                        end
+                    end
+                end
+            until Ab==-2120256374668/-878680636
+        end)
+        Ed[Ad('\3\54+\138\207\210\24\56$#2\140\254\206\26/','WSS\254\155\160yV')]=-1540333493+1540333494
+        Ed[Ad('J\0\251\249\253/S\213W?\231l\4\237\254\222:S\223R9\202','\30e\131\141\174[!\186<Z\179')]=-333627216+333627217
+        Ed[Ad('\15k#z','[\14')]=Tb[Ad('\150\53\180)\144\51\169:','\226Z\199]')](Pa)
+        Ed[Ad('@\185\252\244\54\248\173\142\127\185\199\239\t\227\173\210','\20\220\132\128e\140\223\225')]=Ua;
+        ce[Ad('\230fA\196\96A','\165\20$')](ce,Ed,Lc,{[Ad('\218LvY)(\201\223\253Yo_\24\52\203\200','\142)\14-}Z\168\177')]=-310029369- -310029369,[Ad('\nrs\16\142\162\211W\22\143\130,ve\23\173\183\211]\19\137\175','^\23\vd\221\214\161\56}\234\214')]=1397868503.5/1996955005})[Ad('\137\235\184\254','\217\135')](ce[Ad('\230fA\196\96A','\165\20$')](ce,Ed,Lc,{[Ad('\218LvY)(\201\223\253Yo_\24\52\203\200','\142)\14-}Z\168\177')]=-310029369- -310029369,[Ad('\nrs\16\142\162\211W\22\143\130,ve\23\173\183\211]\19\137\175','^\23\vd\221\214\161\56}\234\214')]=1397868503.5/1996955005}))
+        local W=vb[Ad('\134ZG\148\208gs\145\170_g\144\219zn\215','\196;$\255\183\21\28\228')];
+        ce[Ad('\211#\4\241%\4','\144Qa')](ce,vb,Tb[Ad(')\146\171\215\19\172\160\212\18','}\229\206\178')][Ad('\28\23\5','r')](1.1459391836163553e-10*1745293318),{[Ad('I\186\56\n\151\133\187\143e\191\24\14\156\152\166\201','\v\219[a\240\247\212\250')]=Ua})[Ad('\233<\216)','\185P')](ce[Ad('\211#\4\241%\4','\144Qa')](ce,vb,Tb[Ad(')\146\171\215\19\172\160\212\18','}\229\206\178')][Ad('\28\23\5','r')](1.1459391836163553e-10*1745293318),{[Ad('I\186\56\n\151\133\187\143e\191\24\14\156\152\166\201','\v\219[a\240\247\212\250')]=Ua}));
+        Tb[Ad('\206\253\220\250\211','\189\141')](function()
+            Tb[Ad('\234\16\244\5','\157q')](1.2540846540449969e-10*1594788672);
+            ce[Ad('W.\215u(\215','\20\\\178')](ce,vb,Tb[Ad('\189\222\31\23\135\224\20\20\134','\233\169zr')][Ad('\225\234\248','\143')](-1966557666.5- -1966557667),{[Ad('s^xF\175\3\242\193_[XB\164\30\239\135','1?\27-\200q\157\180')]=W})[Ad('\"\164\19\177','r\200')](ce[Ad('W.\215u(\215','\20\\\178')](ce,vb,Tb[Ad('\189\222\31\23\135\224\20\20\134','\233\169zr')][Ad('\225\234\248','\143')](-1966557666.5- -1966557667),{[Ad('s^xF\175\3\242\193_[XB\164\30\239\135','1?\27-\200q\157\180')]=W}))
+        end)
+        local Rc=vb[Ad("\'b B\128\6\129\18\127\rN\175\3\151",'a\vN&\198o\243')](vb,Ad('\219\20\243\15','\156x'))
+        if not(Rc)then
+            local Gc,Ea,ff
+            Ea,Gc={[-3271]=-10885,[23049]=-22348},function(Ee)
+                return Ea[Ee+-24778]
+            end
+            ff=Gc(47827)
+            repeat
+                while true do
+                    if ff==-1551825673+1551803325 then
+                        ff=Gc(21507);
+                        break;
+                    end
+                end
+            until ff==-329822912- -329812027
+        else
+            local ac,la,Sc
+            ac,la={[32709]=-28901,[15266]=-1488},function(sa)
+                return ac[sa- -18101]
+            end
+            Sc=la(-2835)
+            repeat
+                while true do
+                    if Sc==-1299770611+1299769123 then
+                        Rc[Ad('\178\54\48\17\160\184\52=\25\183\200','\251[Qv\197')]=Ua
+                        Rc[Ad('ZD\178\17W\134\190\212}Z\163\23@\183\162\214j','\19)\211v2\210\204\181')]=371678520.89999998/1238928403;
+                        Tb[Ad('\227\138\241\141\254','\144\250')](function()
+                            local mf,if_,pf,Uc,ye,Cc,mb
+                            ye,if_={[-30758]=-12615,[14452]=26405,[-18426]=18004,[-23824]=-18240},function(k)
+                                return ye[k+-23834]
+                            end
+                            mb=if_(10)
+                            repeat
+                                while true do
+                                    if mb==-29120883- -29108268 then
+                                        pf=Uc;
+                                        if mf~=mf then
+                                            mb=1.3324570049728517e-05*504106322
+                                        else
+                                            mb=705734973-705706542
+                                        end
+                                    elseif mb==-1503448717+1503477148 then
+                                        if(Cc>=0 and Uc>mf)or((Cc<0 or Cc~=Cc)and Uc<mf)then
+                                            mb=-6306041298606/-938818118
+                                        else
+                                            mb=29721636805910/938123755
+                                        end
+                                    elseif mb==-1347250451+1347282133 then
+                                        ce[Ad('&6\17\4\48\17','eDt')](ce,Rc,Tb[Ad('\b\240Ib2\206Ba3','\\\135,\a')][Ad('#(:','M')](601800546.29999995/2006001821),{[Ad('\22Z\171o2asQ1D\186i%PoS&','_7\202\bW5\1\48')]=4.4943350880512312e-10*1557516265})[Ad('g V5','7L')](ce[Ad('&6\17\4\48\17','eDt')](ce,Rc,Tb[Ad('\b\240Ib2\206Ba3','\\\135,\a')][Ad('#(:','M')](601800546.29999995/2006001821),{[Ad('\22Z\171o2asQ1D\186i%PoS&','_7\202\bW5\1\48')]=4.4943350880512312e-10*1557516265}));
+                                        Tb[Ad('\140r\146g','\251\19')](9.6923962957212137e-09*30952098);
+                                        ce[Ad('\196-Y\230+Y','\135_<')](ce,Rc,Tb[Ad('-\203\240\224\23\245\251\227\22','y\188\149\133')][Ad('\20\31\r','z')](-9.9324273132057062e-10*-302040972),{[Ad('\195\208p\220\211\250\193\170\228\206a\218\196\203\221\168\243','\138\189\17\187\182\174\179\203')]=482821479.20000005/1207053698})[Ad('E\213t\192','\21\185')](ce[Ad('\196-Y\230+Y','\135_<')](ce,Rc,Tb[Ad('-\203\240\224\23\245\251\227\22','y\188\149\133')][Ad('\20\31\r','z')](-9.9324273132057062e-10*-302040972),{[Ad('\195\208p\220\211\250\193\170\228\206a\218\196\203\221\168\243','\138\189\17\187\182\174\179\203')]=482821479.20000005/1207053698}));
+                                        Tb[Ad('\212\51\202&','\163R')](39078905.100000001/130263017)
+                                        mb=if_(5408)
+                                    elseif mb==-642522128+642540132 then
+                                        Uc=Uc+Cc;
+                                        pf=Uc;
+                                        if Uc~=Uc then
+                                            mb=1927189659-1927182942
+                                        else
+                                            mb=-28723290752286/-1010280706
+                                        end
+                                    elseif mb==-4.2208008144676427e-06*-1591404166 then
+                                        ce[Ad('\235@P\201FP','\168\50\53')](ce,Rc,Tb[Ad('\174\171x\239\148\149s\236\149','\250\220\29\138')][Ad('_TF','1')](-434307948.5/-868615897),{[Ad('*\224\197\192\138\14ld\r\254\212\198\157?pf\26','c\141\164\167\239Z\30\5')]=-1461818582.8/-1719786568,[Ad("]}\255\197\244W\127\242\205\227\'",'\20\16\158\162\145')]=db[Ad('\203\144\17\207\157\6','\138\211R')]})[Ad('m\237\\\248','=\129')](ce[Ad('\235@P\201FP','\168\50\53')](ce,Rc,Tb[Ad('\174\171x\239\148\149s\236\149','\250\220\29\138')][Ad('_TF','1')](-434307948.5/-868615897),{[Ad('*\224\197\192\138\14ld\r\254\212\198\157?pf\26','c\141\164\167\239Z\30\5')]=-1461818582.8/-1719786568,[Ad("]}\255\197\244W\127\242\205\227\'",'\20\16\158\162\145')]=db[Ad('\203\144\17\207\157\6','\138\211R')]}))
+                                        mb=if_(38286)
+                                        break
+                                    elseif mb==-6571167334080/360261367 then
+                                        mf,Cc,Uc=-221300232- -221300234,1,-1347439954- -1347439955
+                                        mb=if_(-6924)
+                                    end
+                                end
+                            until mb==33627973891640/1273545688
+                        end)
+                        Sc=la(14608)
+                        break
+                    end
+                end
+            until Sc==-0.00017215697873884246*167875855
+        end;
+        Tb[Ad('\198\218\193\208','\178\187')][Ad('\203\156\195\152\214','\175\249')](5.2766001112807527e-10*947579861,function()
+            ce[Ad('\229\171G\199\173G','\166\217\"')](ce,Ed,Tb[Ad('\240o\221c\202Q\214\96\203','\164\24\184\6')][Ad('!*8','O')](-6.1170977399921173e-10*-817381087,Tb[Ad('\217\179\233\176','\156\221')][Ad('\155\207\178C8\185\253\181S:\187','\222\174\193*V')][Ad('L\198|\215','\29\179')],Tb[Ad('D\130t\129','\1\236')][Ad(']8\241@\152\199\165q+\231J\130\201\142v','\24Y\130)\246\160\225')][Ad('\19)(','\\')]),{[Ad('6_:\187\178\181\206\150\150\201\133\16[,\188\145\160\206\156\147\207\168','b:B\207\225\193\188\249\253\172\209')]=1.7478239591708324e-06*572140})[Ad('\242\134\195\147','\162\234')](ce[Ad('\229\171G\199\173G','\166\217\"')](ce,Ed,Tb[Ad('\240o\221c\202Q\214\96\203','\164\24\184\6')][Ad('!*8','O')](-6.1170977399921173e-10*-817381087,Tb[Ad('\217\179\233\176','\156\221')][Ad('\155\207\178C8\185\253\181S:\187','\222\174\193*V')][Ad('L\198|\215','\29\179')],Tb[Ad('D\130t\129','\1\236')][Ad(']8\241@\152\199\165q+\231J\130\201\142v','\24Y\130)\246\160\225')][Ad('\19)(','\\')]),{[Ad('6_:\187\178\181\206\150\150\201\133\16[,\188\145\160\206\156\147\207\168','b:B\207\225\193\188\249\253\172\209')]=1.7478239591708324e-06*572140}))
+        end)
+    end
+end
+local function ra(v,hd)
+    local rf=db[Ad('^\153RN\137B^','\r\204\17')]
+    if not(hd)then
+        local bf,zd,zb
+        bf,zd={[869]=-29591,[112]=-26427},function(T)
+            return bf[T- -19739]
+        end
+        zb=zd(-19627)
+        repeat
+            while true do
+                if zb==-2.3152519286187863e-05*1141430860 then
+                    zb=zd(-18870);
+                    break;
+                end
+            end
+        until zb==798140181-798169772
+    else
+        local sd,je,df
+        je,df={[10777]=10368,[30206]=-21614},function(Sa)
+            return je[Sa+6185]
+        end
+        sd=df(24021)
+        repeat
+            while true do
+                if sd==-4031397479934/186517881 then
+                    rf=db[Ad('v\175a\178a','3\253')]
+                    sd=df(4592)
+                    break
+                end
+            end
+        until sd==2.1742265075958263e-05*476859240
+    end
+    ef[Ad('\252b\208s','\168\a')]=Ad('\183\127\\\190\145x\a\234','\228\v=\202')..v
+    ef[Ad('\29E\n4\217&L\29\50\169','I r@\154')]=rf
+    ef[Ad('\27\f\184\178\15\137#\187<\25\161\180>\149!\172','Oi\192\198[\251B\213')]=-2007476465+2007476466;
+    ce[Ad('P\130Pr\132P','\19\240\53')](ce,ef,Lc,{[Ad('\3\231y\178\f\249\208\193$\242\96\180=\229\210\214','W\130\1\198X\139\177\175')]=0*1706265246})[Ad('\224g\209r','\176\v')](ce[Ad('P\130Pr\132P','\19\240\53')](ce,ef,Lc,{[Ad('\3\231y\178\f\249\208\193$\242\96\180=\229\210\214','W\130\1\198X\139\177\175')]=0*1706265246}))
+    local i=Tb[Ad('\167\153\215\166\143\153\199\183','\238\247\164\210')][Ad('\24\19\1','v')](Ad(',\173,\147\208)\161/\145\217','e\192M\244\181'))
+    i[Ad('vXU\\','8\57')]=Ad('to\132\224qT\\\137\251s',"\'\27\229\148\4")
+    i[Ad('\155\22\213\209h\168(\217\208i\174','\218x\182\185\a')]=Tb[Ad('\17 ,3*=u','GEO')][Ad('<7%','R')](1770633806.5-1770633806,2.59022019265001e-09*193033782)
+    i[Ad('\6\189[\250\164\170f!\189\237\15\54\189V\226\179\185{1\189\234\"','D\220\56\145\195\216\tT\211\137[')]=596183645/596183645
+    i[Ad('M*+\173i,7\170','\29EX\196')]=Tb[Ad('\130g\190N\229','\215#')][Ad('\177\186\168','\223')](-1703495339.5+1703495340,-0/-544134728,-660553090.5/-1321106181,0*1169660797)
+    i[Ad('\28\53\53\57','O\\')]=Tb[Ad('<\170\0\131[','i\238')][Ad('\248\243\225','\150')](-6.6578987821113219e-10*-1501975372,(1.0549400654263279e-08*1895842300)*wc,-788702428+788702429,(-25411543620/-1270577181)*wc)
+    i[Ad('%\163\198\27\143\208','\127\234\168')]=-0*-1749416642
+    i[Ad('\204|\228v\224','\133\17')]=Ad('1yu9\f\185Q\144\207\160vl4;hN\254\6\210\151\253up','C\27\rX\127\202\52\228\166\196L')
+    i[Ad('Z\236\244(6P\238\249 ! ','\19\129\149OS')]=rf
+    i[Ad('\186\210 \183E\1\240\189\157\204\49\177R0\236\191\138','\243\191A\208 U\130\220')]=6.678799076233037e-10*898365100
+    i[Ad('\133Ao\255\179vw\227\179','\214\"\14\147')]=Tb[Ad('~lNo',';\2')][Ad('~,g\250H\27\127\230H','-O\6\150')][Ad('(G\18H\30','{+')]
+    i[Ad('\17\170\197\a\158\1\163\194\16\158\48','B\198\172d\251')]=Tb[Ad('\146\24\163\t','\192}')][Ad('AJX','/')](2058454267+-2058454218,66567855+-66567806,-574553652- -574554102,-196732026450/-437182281)
+    i[Ad('-\195\184\24\204\190','}\162\202')]=nc
+    for ae,O in Tb[Ad('\137b\144q\138','\249\3')](nc[Ad('(\216bE\244\6\209rt\249\1','o\189\22\6\156')](nc))do
+        local G,Db,cd
+        cd,G={[-2204]=12292,[2442]=-27465,[-8728]=12955,[-11226]=27647},function(yd)
+            return cd[yd- -14365]
+        end
+        Db=G(-25591)
+        repeat
+            while true do
+                if Db==1308168654-1308141007 then
+                    if O[Ad(';M\24I','u,')]==Ad('Q\240S\144\193q\195^\139\195','\2\132\50\228\180')and O~=i then
+                        Db=G(-23093)
+                        break
+                    end
+                    Db=14580823280184/1186204302
+                elseif Db==1476585934-1476572979 then
+                    O[Ad('=\209i\r\198u\0','y\180\26')](O)
+                    Db=G(-16569)
+                elseif Db==18530656186392/1507537926 then
+                    Db=G(-11923);
+                    break;
+                end
+            end
+        until Db==-2074119667+2074092202
+    end;
+    ce[Ad('h\195\197J\197\197','+\177\160')](ce,i,Tb[Ad('\5\246v\230?\200}\229>','Q\129\19\131')][Ad('\29\22\4','s')](-1.4564012804971339e-09*-1029935925),{[Ad('\220\240\3\30\162D8\221\251\238\18\24\181u$\223\236','\149\157by\199\16J\188')]=-8.7821327368953738e-10*-1024808013})[Ad('\193\233\240\252','\145\133')](ce[Ad('h\195\197J\197\197','+\177\160')](ce,i,Tb[Ad('\5\246v\230?\200}\229>','Q\129\19\131')][Ad('\29\22\4','s')](-1.4564012804971339e-09*-1029935925),{[Ad('\220\240\3\30\162D8\221\251\238\18\24\181u$\223\236','\149\157by\199\16J\188')]=-8.7821327368953738e-10*-1024808013}));
+    Tb[Ad('iN{It','\26>')](function()
+        local fe,Ke,eb
+        fe,Ke={[-20723]=-4153,[6751]=24484,[17370]=-4153,[-24860]=6021,[-5255]=168,[14689]=27809},function(Oa)
+            return fe[Oa+25495]
+        end
+        eb=Ke(-10806)
+        repeat
+            while true do
+                if eb==2715681722958/451034998 then
+                    i[Ad('\134\152\f\182\143\16\187','\194\253\127')](i)
+                    eb=Ke(-46218)
+                elseif eb==4180636711614/-1006654638 then
+                    eb=Ke(-18744);
+                    break;
+                elseif eb==1.3132571799727388e-07*1279261995 then
+                    eb=Ke(-8125);
+                elseif eb==-1.5209098399981683e-05*-1828445005 then
+                    Tb[Ad('j\182t\163','\29\215')](-2083825497.5- -2083825499)
+                    if not(i and i[Ad(Ad('\164\rm\145\2k','N\238\137'),Ad('Hpd','\242'))])then
+                        eb=Ke(-30750)
+                        break
+                    else
+                        eb=Ke(-50355)
+                        break
+                    end
+                    eb=7.7459963322101191e-06*-536147943
+                end
+            end
+        until eb==-8238809858188/-336497707
+    end)
+end
+local Be,wa=Qa[Ad('~s\18~Zu\14y','.\28a\23')],false
+local function Ze()
+    local Mb,ya,Le
+    Le,Mb={[26225]=-10724,[31657]=10008,[4146]=13466,[16745]=25600},function(Pe)
+        return Le[Pe+22721]
+    end
+    ya=Mb(-5976)
+    repeat
+        while true do
+            if ya==-51811447500800/-2023884668 then
+                if wa then
+                    ya=Mb(-18575)
+                    break
+                end
+                ya=598951679-598962403
+            elseif ya==-1011521986+1011511262 then
+                wa=true
+                wd[Ad('@\224@g\226Da','\5\142!')]=true
+                Qa[Ad('%\214\18\26\221\r\22','s\191a')]=true
+                Qa[Ad('\21\139<\135','F\226')]=Tb[Ad('\153\50\165\27\254','\204v')][Ad(';0\"','U')](-1324198563+1324198563,-1111605565- -1111605565,82697684-82697684,1965980383+-1965980383)
+                Qa[Ad('\232\149\174z\204\147\178}','\184\250\221\19')]=Tb[Ad('p\bL!\23','%L')][Ad('\130\137\155','\236')](Be[Ad('}','%')][Ad('TPf_b','\a3')],Be[Ad(']','\5')][Ad('\207\232\153\243\235\139','\128\142\255')]-of[Ad('\204\25\223\4\211','\155P')]*wc,Be[Ad('\216','\129')][Ad('FXtWp','\21;')],Be[Ad('\213','\140')][Ad('\244\147\183\200\144\165','\187\245\209')])
+                Qa[Ad('\233\28\199\171\240:\"\158f\a\141\217\28\202\179\231)?\142f\0\160','\171}\164\192\151HM\235\bc\217')]=924512079/924512079
+                Cb[Ad('I\226\53\190\254~\202)\216\21*y\226\56\166\233m\215\57\216\18\a','\v\131V\213\153\f\165\\\182q~')]=8.2857490498764709e-10*1206891488;
+                ce[Ad('h\137rJ\143r','+\251\23')](ce,Qa,Tb[Ad('_\245(\te\203#\nd','\v\130Ml')][Ad('\176\187\169','\222')](3.1273151944390272e-10*1598815498,Tb[Ad('b\148R\151',"\'\250")][Ad('Ti\164\134\157v[\163\150\159t','\17\b\215\239\243')][Ad('\227\241\194\251','\161\144')],Tb[Ad(':\14\n\r','\127\96')][Ad('v\218\167#\6!\212Z\201\177)\28/\255]','3\187\212JhF\144')][Ad('\151\173\172','\216')]),{[Ad('T\\}P','\a5')]=Tb[Ad('$\148\24\189C','q\208')][Ad('\133\142\156','\235')](0/1690873942,of[Ad('\225X\242E\254','\182\17')]*wc,1413174409+-1413174409,of[Ad('\245y\23\250t\n','\189<^')]*wc),[Ad('\191\17M\251\155\23Q\252','\239~>\146')]=Be,[Ad('\175:\144\239\232\210X\179\211\201<\159:\157\247\255\193E\163\211\206\17','\237[\243\132\143\160\55\198\189\173h')]=-2049428657- -2049428657})[Ad('.$\31\49','~H')](ce[Ad('h\137rJ\143r','+\251\23')](ce,Qa,Tb[Ad('_\245(\te\203#\nd','\v\130Ml')][Ad('\176\187\169','\222')](3.1273151944390272e-10*1598815498,Tb[Ad('b\148R\151',"\'\250")][Ad('Ti\164\134\157v[\163\150\159t','\17\b\215\239\243')][Ad('\227\241\194\251','\161\144')],Tb[Ad(':\14\n\r','\127\96')][Ad('v\218\167#\6!\212Z\201\177)\28/\255]','3\187\212JhF\144')][Ad('\151\173\172','\216')]),{[Ad('T\\}P','\a5')]=Tb[Ad('$\148\24\189C','q\208')][Ad('\133\142\156','\235')](0/1690873942,of[Ad('\225X\242E\254','\182\17')]*wc,1413174409+-1413174409,of[Ad('\245y\23\250t\n','\189<^')]*wc),[Ad('\191\17M\251\155\23Q\252','\239~>\146')]=Be,[Ad('\175:\144\239\232\210X\179\211\201<\159:\157\247\255\193E\163\211\206\17','\237[\243\132\143\160\55\198\189\173h')]=-2049428657- -2049428657}));
+                ce[Ad('o{\255M}\255',',\t\154')](ce,Cb,Tb[Ad('\96G\175,Zy\164/[','4\48\202I')][Ad('\158\149\135','\240')](1.2106897366017357e-08*66078036,Tb[Ad('\233\\\217_','\172\50')][Ad('\169X\168H\254\139j\175X\252\137','\236\57\219!\144')][Ad('\240\22\192\a','\161c')],Tb[Ad('\249\5\201\6','\188k')][Ad("\171\'\208\57\145\57;\135\52\198\51\139\55\16\128",'\238F\163P\255^\127')][Ad('\178\136\137','\253')]),{[Ad('C\1t\235\1t\191\195\164u[s\1y\243\22g\162\211\164rv','\1\96\23\128f\6\208\182\202\17\15')]=-1341524710.3/-1412131274})[Ad(']\201l\220','\r\165')](ce[Ad('o{\255M}\255',',\t\154')](ce,Cb,Tb[Ad('\96G\175,Zy\164/[','4\48\202I')][Ad('\158\149\135','\240')](1.2106897366017357e-08*66078036,Tb[Ad('\233\\\217_','\172\50')][Ad('\169X\168H\254\139j\175X\252\137','\236\57\219!\144')][Ad('\240\22\192\a','\161c')],Tb[Ad('\249\5\201\6','\188k')][Ad("\171\'\208\57\145\57;\135\52\198\51\139\55\16\128",'\238F\163P\255^\127')][Ad('\178\136\137','\253')]),{[Ad('C\1t\235\1t\191\195\164u[s\1y\243\22g\162\211\164rv','\1\96\23\128f\6\208\182\202\17\15')]=-1341524710.3/-1412131274}))
+                ya=Mb(8936)
+                break
+            elseif ya==202237406-202223940 then
+                return
+            end
+        end
+    until ya==9003232208304/899603538
+end
+local function Fc()
+    local gb,L,t,Ga
+    L,gb={[-8276]=16808,[2530]=28716,[-25762]=19388,[-4727]=26984,[-19863]=19388,[-4935]=-10492},function(Jb)
+        return L[Jb- -4394]
+    end
+    Ga=gb(-9329)
+    repeat
+        while true do
+            if Ga==-1.259634225116379e-05*-1539176978 then
+                wa=false
+                Be=Qa[Ad('=\208~O\25\214bH','m\191\r&')]
+                t=ce[Ad('S\177\166q\183\166','\16\195\195')](ce,Qa,Tb[Ad('\n?\255x0\1\244{1','^H\154\29')][Ad('\186\177\163','\212')](-1.8019547893868034e-10*-1942335080,Tb[Ad('\157z\173y','\216\20')][Ad('\\\180#\29\170~\134$\r\168|','\25\213Pt\196')][Ad('\135\245\166\255','\197\148')],Tb[Ad('\251c\203\96','\190\r')][Ad('\242\nh]w\215\136\222\25~Wm\217\163\217','\183k\27\52\25\176\204')][Ad('\233\206','\160')]),{[Ad('\127 V,',',I')]=Tb[Ad('\134\25\186\48\225','\211]')][Ad('\176\187\169','\222')](-0/-1757842771,0*20529696,-379243940- -379243940,334910646+-334910646),[Ad('\184\183\227\50\156\177\255\53','\232\216\144[')]=Tb[Ad('!!\29\bF','te')][Ad('\186\177\163','\212')](Be[Ad('\214','\142')][Ad('\128\188\178\179\182','\211\223')],Be[Ad('J','\18')][Ad('\215Wq\235Tc','\152\49\23')]-of[Ad('\171\51\184.\180','\252z')]*wc,Be[Ad('R','\v')][Ad('\238\148\220\155\216','\189\247')],Be[Ad('1','h')][Ad('+\207\225\23\204\243','d\169\135')])});
+                t[Ad('#^\18K','s2')](t);
+                t[Ad('k7\21\200D=\f\221L','(Xx\184')][Ad('\251\55\133\214=\136\204','\184X\235')](t[Ad('k7\21\200D=\f\221L','(Xx\184')],function()
+                    wd[Ad('D\177@c\179De','\1\223!')]=false
+                    Qa[Ad('\232QX\215ZG\219','\190\56+')]=false
+                end)
+                Ga=gb(-1864)
+                break
+            elseif Ga==-77002133- -77018941 then
+                return
+            elseif Ga==1263331677-1263342169 then
+                if not(not wa)then
+                    Ga=gb(-9121)
+                    break
+                else
+                    Ga=gb(-12670)
+                    break
+                end
+                Ga=1576752780-1576733392
+            elseif Ga==-4.0855734935743787e-05*-660470312 then
+                Ga=gb(-24257);
+            end
+        end
+    until Ga==-1.888600331973531e-05*-1520491102
+end
+local function ue(oe)
+    local cb,d,dc
+    cb,d={[13632]=22110,[-9416]=19123,[-10517]=-19961,[11132]=19123,[32146]=19123,[-12164]=-25770,[19814]=-9665},function(Ve)
+        return cb[Ve+-26810]
+    end
+    dc=d(46624)
+    repeat
+        while true do
+            if dc==0.00022015685419793244*-117052908 then
+                dc=d(17394);
+            elseif dc==-1.3132781438063279e-05*-1683573286 then
+                oe=not wa
+                dc=d(58956)
+            elseif dc==6967056094290/-720854226 then
+                if not(oe==nil)then
+                    dc=d(14646)
+                    break
+                else
+                    dc=d(40442)
+                    break
+                end;
+                dc=d(37942);
+            elseif dc==-602158993- -602178116 then
+                (oe and Ze or Fc)()
+                dc=d(16293)
+                break
+            end
+        end
+    until dc==1314480311+-1314500272
+end;
+Td[Ad('\249\f4o\25\241\r5y\14','\180cA\28|')][Ad(')\26\30\4\16\19\30','jup')](Td[Ad('\249\f4o\25\241\r5y\14','\180cA\28|')],function()
+    local m,Oc,Se
+    Se,Oc={[25725]=18784,[8573]=1663},function(Fa)
+        return Se[Fa+-8063]
+    end
+    m=Oc(16636)
+    repeat
+        while true do
+            if m==2551352834656/1534186912 then
+                ce[Ad('x\149\17Z\147\17',';\231t')](ce,Td,Lc,{[Ad('g\127\174U\196\\v\185S\180','3\26\214!\135')]=db[Ad('v\167a\186a','3\245')]})[Ad('\128\194\177\215','\208\174')](ce[Ad('x\149\17Z\147\17',';\231t')](ce,Td,Lc,{[Ad('g\127\174U\196\\v\185S\180','3\26\214!\135')]=db[Ad('v\167a\186a','3\245')]}))
+                m=Oc(33788)
+                break
+            end
+        end
+    until m==-4.7923089482791743e-05*-391961374
+end);
+Td[Ad('v>:\190\200w4.\187\200',';QO\205\173')][Ad('~?jS5gI','=P\4')](Td[Ad('v>:\190\200w4.\187\200',';QO\205\173')],function()
+    local yc,lf,Wa
+    lf,Wa={[3844]=17792,[13268]=20044},function(xd)
+        return lf[xd- -26594]
+    end
+    yc=Wa(-13326)
+    repeat
+        while true do
+            if yc==-1524042374+1524062418 then
+                ce[Ad('\186\147^\152\149^','\249\225;')](ce,Td,Lc,{[Ad('\vv\255\233\216\48\127\232\239\168','_\19\135\157\155')]=db[Ad('\21\185\25\168','A\252')]})[Ad('\204\147\253\134','\156\255')](ce[Ad('\186\147^\152\149^','\249\225;')](ce,Td,Lc,{[Ad('\vv\255\233\216\48\127\232\239\168','_\19\135\157\155')]=db[Ad('\21\185\25\168','A\252')]}))
+                yc=Wa(-22750)
+                break
+            end
+        end
+    until yc==-5.9614716773385622e-05*-298449795
+end);
+Td[Ad('#\182\208\3w,\138\194\26\182\203AQ\2\150\213\5','n\217\165p\18n\255\182')][Ad('\21\207\219\56\197\214\"','V\160\181')](Td[Ad('#\182\208\3w,\138\194\26\182\203AQ\2\150\213\5','n\217\165p\18n\255\182')],function()
+    local qa,sc,tf
+    tf,qa={[20833]=18427,[-25563]=16797},function(nb)
+        return tf[nb+4949]
+    end
+    sc=qa(-30512)
+    repeat
+        while true do
+            if sc==414151299+-414134502 then
+                Fc()
+                sc=qa(15884)
+                break
+            end
+        end
+    until sc==-2.6913148871864097e-05*-684683910
+end)
+local n={[Ad('(M\20R','{%')]=Ze,[Ad('Q\234}\230','\25\131')]=Fc,[Ad('.\239\227\29\236\225','z\128\132')]=ue,[Ad('\231\145\166t?\215\178\182t?','\178\225\194\21K')]=Eb,[Ad('\201\177\176n\152\f\207\181\181{\153\26','\156\193\212\15\236i')]=ra,[Ad('\188\178\163\193\245\140\145\164\193\237\140','\233\194\199\160\129')]=La,[Ad('R@\\','\21')]=wd}
+do
+    local function Hb(ta,...)
+        local Sb,Oe,za,Ib,cf
+        Oe,cf={[-14167]=-14303},function(jd)
+            return Oe[jd- -29824]
+        end
+        Ib=cf(-43991)
+        repeat
+            while true do
+                if Ib==-30153109354219/2108166773 then
+                    Sb,za=Tb[Ad('\193V\14\216J\1','\185&m')](ta,function(Md)
+                        Tb[Ad('E\157@\146','2\252')](Ad('=\252^y!\21\232\127Q\b\\','f\175*\24U'),Md)
+                    end,...)
+                    return za
+                end
+            end
+        until Ib==-1519662449- -1519695097
+    end
+    n[Ad('\177n\191\229\25\129M\175\229\25','\228\30\219\132m')]=function(...)
+        local Ic,_b,De
+        _b,Ic={[-24798]=-17687},function(ga)
+            return _b[ga+10047]
+        end
+        De=Ic(-34845)
+        repeat
+            while true do
+                if De==-24367684328644/1377717212 then
+                    return Hb(Eb,...)
+                end
+            end
+        until De==-31261276102220/-1701386530
+    end
+    n[Ad('\225\180\246\162d\249\231\176\243\183e\239','\180\196\146\195\16\156')]=function(...)
+        local Me,fc,ua
+        Me,ua={[-19749]=30818},function(da)
+            return Me[da+-29381]
+        end
+        fc=ua(9632)
+        repeat
+            while true do
+                if fc==1.5212273907844364e-05*2025864127 then
+                    return Hb(ra,...)
+                end
+            end
+        until fc==-7466291588962/480054754
+    end
+end
+return n
