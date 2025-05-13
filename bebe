@@ -271,17 +271,17 @@ local statusContainer = CreateRoundFrame(
 )
 local statusGradient = CreateAnimatedGradient(statusContainer)
 statusGradient.Rotation = 90
-CreateTextLabel(
-	"StatusHeader",
-	"AutoFarm",
-	UDim2.new(0.9, 0, 0, 20 * currentScale),
-	UDim2.new(0.05, 0, 0.1, 0),
-	statusContainer,
-	COLORS.TEXT,
-	BASE_SIZE.HEADER_TEXT_SIZE,
-	"Bold",
-	nil,
-	true
+local statusHeader = CreateTextLabel(
+    "StatusHeader",
+    "AutoFarm",
+    UDim2.new(0.9, 0, 0, 20 * currentScale),
+    UDim2.new(0.05, 0, 0.1, 0),
+    statusContainer,
+    COLORS.TEXT,
+    BASE_SIZE.HEADER_TEXT_SIZE,
+    "Bold",
+    nil,
+    true
 )
 local statusText = CreateTextLabel(
 	"StatusText",
