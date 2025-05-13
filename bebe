@@ -1,4 +1,4 @@
--- This script was protected using the MoonVeil Obfuscator v1.1.2 [https://moonveil.cc]
+-- This script was protected using the Goodboy mix
 
 local Z,Sd,Ra=pairs,type,getmetatable;
 local Tb=getfenv()
