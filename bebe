@@ -84,6 +84,10 @@ local BASE_SIZE = {
 	CLOSE_BUTTON_SIZE = 24,
 }
 local currentScale = 1
+local function setStroke(label, thickness)
+    local t = math.clamp(1 - (thickness * 0.25), 0, 1) 
+    label.TextStrokeTransparency = t
+end
 
 local function CreateRoundFrame(name, size, pos, parent, bg)
 	local f = Instance.new("Frame")
@@ -389,7 +393,8 @@ local function UpdateScale(newScale)
 				statName.TextSize = BASE_SIZE.STAT_TEXT_SIZE * currentScale
 
 				local strokeThickness = math.max(1, math.floor(currentScale * 1.5))
-				statName.TextStrokeThickness = strokeThickness
+                setStroke(statName, strokeThickness)
+
 			end
 
 			local statValue = statRow:FindFirstChild("StatValue" .. i)
@@ -397,7 +402,7 @@ local function UpdateScale(newScale)
 				statValue.TextSize = BASE_SIZE.STAT_TEXT_SIZE * currentScale
 
 				local strokeThickness = math.max(1, math.floor(currentScale * 1.5))
-				statValue.TextStrokeThickness = strokeThickness
+				setStroke(statValue, strokeThickness)
 			end
 		end
 	end
@@ -409,10 +414,10 @@ local function UpdateScale(newScale)
 	statusText.Size = UDim2.new(0.9, 0, 0, 20 * currentScale)
 
 	local strokeThickness = math.max(1, math.floor(currentScale * 1.5))
-	titleLabel.TextStrokeThickness = strokeThickness
-	statsHeader.TextStrokeThickness = strokeThickness
-	statusHeader.TextStrokeThickness = strokeThickness
-	statusText.TextStrokeThickness = strokeThickness
+    setStroke(titleLabel, strokeThickness)
+    setStroke(statsHeader, strokeThickness)
+    setStroke(statusHeader, strokeThickness)
+    setStroke(statusText, strokeThickness)
 
 	closeButton.Size =
 		UDim2.new(0, BASE_SIZE.CLOSE_BUTTON_SIZE * currentScale, 0, BASE_SIZE.CLOSE_BUTTON_SIZE * currentScale)
